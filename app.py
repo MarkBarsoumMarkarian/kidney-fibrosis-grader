@@ -7,6 +7,13 @@ import sys, os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from utils.model_builder import model as build_model
+import gdown
+
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'global_only.pth')
+if not os.path.exists(MODEL_PATH):
+    print('Downloading model weights...')
+    gdown.download('https://drive.google.com/uc?id=1KvJQ0YKL-I96UJ5zUGLR_Qpd4R0ach5t', MODEL_PATH, quiet=False)
+    print('Done.')
 
 st.set_page_config(
     page_title="Kidney Fibrosis Grader",
