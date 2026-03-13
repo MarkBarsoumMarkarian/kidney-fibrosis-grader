@@ -4,6 +4,7 @@ import numpy as np
 from PIL import Image
 import torchvision.transforms as transforms
 import sys, os
+import requests
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from utils.model_builder import model as build_model
@@ -35,6 +36,9 @@ CLASS_NAMES  = [
 ]
 CLASS_COLORS = ["#2ecc71", "#f1c40f", "#e67e22", "#e74c3c"]
 CLASS_ICONS  = ["🟢", "🟡", "🟠", "🔴"]
+CLASS_SHORT  = ["Minimal (<10%)", "Mild (10–25%)", "Moderate (25–50%)", "Severe (>50%)"]
+
+HF_API_URL = "https://api-inference.huggingface.co/models/Qwen/Qwen2.5-72B-Instruct/v1/chat/completions"
 
 @st.cache_resource
 def load_model():
@@ -45,14 +49,11 @@ def load_model():
 transform = transforms.Compose([
     transforms.Resize((IMG_SIZE, IMG_SIZE)),
     transforms.ToTensor(),
-    
 ])
 
 def predict(img):
     tensor = transform(img).unsqueeze(0).to(DEVICE)
     net = load_model()
-    # mode 1 forward: (image_global, patches, top_lefts, ratio)
-    # patches/top_lefts/ratio are unused in mode 1 but required as arguments
     dummy_patches   = torch.zeros(1, 3, IMG_SIZE, IMG_SIZE).to(DEVICE)
     dummy_top_lefts = [(0, 0)]
     dummy_ratio     = (1.0, 1.0)
@@ -62,20 +63,78 @@ def predict(img):
     print(f"DEBUG probs: {probs}")
     return probs
 
+
+def get_ai_interpretation(grade_label: str, confidence: float, all_probs: list) -> str:
+    """Call Qwen2.5-72B via HuggingFace free Inference API to interpret the fibrosis grade."""
+
+    # Load token from environment or Streamlit secrets (for Streamlit Community Cloud)
+    hf_token = os.environ.get("HF_TOKEN", "")
+    if not hf_token:
+        try:
+            hf_token = st.secrets["HF_TOKEN"]
+        except Exception:
+            pass
+
+    prob_breakdown = "\n".join(
+        f"  - {CLASS_SHORT[i]}: {all_probs[i]*100:.1f}%"
+        for i in range(4)
+    )
+
+    prompt = f"""You are a nephropathology AI assistant. A deep learning model has analyzed a 
+trichrome-stained kidney biopsy image and produced the following fibrosis grading result:
+
+Predicted Grade: {grade_label}
+Confidence: {confidence:.1f}%
+
+Full probability breakdown:
+{prob_breakdown}
+
+Based on this fibrosis grade, provide a concise clinical interpretation covering exactly these 4 sections:
+
+1. **End-Stage Kidney Disease (ESKD) Assessment**
+   Is this grade associated with end-stage kidney disease, or is ESKD a risk? Be specific about what this grade means in that context.
+
+2. **Progression Risk**
+   How likely is this to worsen over time? What factors typically drive progression at this fibrosis level?
+
+3. **Clinical Recommendations**
+   What are the typical next steps a nephrologist would consider at this fibrosis stage? (e.g. monitoring frequency, interventions, referrals)
+
+4. **Plain-Language Summary**
+   Explain the result in simple, clear language suitable for a patient with no medical background.
+
+Keep each section focused and concise (3–5 sentences). End with a one-line disclaimer that this is AI-generated and not a substitute for clinical judgment."""
+
+    headers = {"Content-Type": "application/json"}
+    if hf_token:
+        headers["Authorization"] = f"Bearer {hf_token}"
+
+    payload = {
+        "model": "Qwen/Qwen2.5-72B-Instruct",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 1000,
+        "temperature": 0.3,
+    }
+
+    response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=60)
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]
+
+
+# ── UI ──────────────────────────────────────────────────────────────────────
+
 st.title("🔬 Kidney Fibrosis Grader")
 st.markdown("Upload a **trichrome-stained kidney biopsy image** to get an automated fibrosis grade.")
 
 with st.expander("ℹ️ About this tool"):
     st.markdown("""
     Deep learning model (ResNet-FPN) trained on trichrome-stained kidney biopsy images.
-
     | Grade | Fibrosis Level |
     |-------|---------------|
     | 🟢 Minimal | < 10% |
     | 🟡 Mild | 10–25% |
     | 🟠 Moderate | 25–50% |
     | 🔴 Severe | > 50% |
-
     **Test accuracy: 95%** on held-out biopsy images.
     > ⚠️ Research use only. Not validated for clinical diagnosis.
     """)
@@ -106,6 +165,7 @@ if uploaded:
                     unsafe_allow_html=True
                 )
                 st.markdown(f"**Confidence: {probs[pred]*100:.1f}%**")
+
                 st.markdown("#### All probabilities")
                 for i, (name, prob) in enumerate(zip(CLASS_NAMES, probs)):
                     st.markdown(f"{CLASS_ICONS[i]} {name}")
@@ -113,6 +173,30 @@ if uploaded:
 
             except Exception as e:
                 st.error(f"Error: {str(e)}")
+                st.stop()
+
+    # ── AI Interpretation ────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("### 🤖 AI Clinical Interpretation")
+    st.caption("Powered by Qwen2.5-72B via Hugging Face")
+
+    with st.spinner("Generating clinical interpretation..."):
+        try:
+            interpretation = get_ai_interpretation(
+                grade_label=CLASS_NAMES[pred],
+                confidence=probs[pred] * 100,
+                all_probs=probs.tolist()
+            )
+            st.markdown(interpretation)
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 401:
+                st.error("HuggingFace token missing or invalid. Add HF_TOKEN to your Streamlit secrets or environment variables.")
+            elif e.response.status_code == 503:
+                st.warning("Model is loading on HuggingFace servers, please wait 20 seconds and try again.")
+            else:
+                st.error(f"AI interpretation unavailable: {str(e)}")
+        except Exception as e:
+            st.error(f"AI interpretation unavailable: {str(e)}")
 
 st.divider()
 st.caption("Research use only · Not for clinical diagnosis · ResNet-FPN · 95% test accuracy")
