@@ -17,368 +17,341 @@ if not os.path.exists(MODEL_PATH):
     print('Done.')
 
 st.set_page_config(
-    page_title="KidneyGrade · Fibrosis Analysis",
-    page_icon="🔬",
+    page_title="Kidney Fibrosis Grader",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# ── Styling ──────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Playfair+Display:wght@600&display=swap');
 
-/* ── Reset & Base ── */
-*, *::before, *::after { box-sizing: border-box; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-html, body, [data-testid="stAppViewContainer"] {
-    background-color: #0a0e14 !important;
-    color: #e8eaf0 !important;
-    font-family: 'DM Sans', sans-serif !important;
-}
-
+html, body,
+[data-testid="stAppViewContainer"],
 [data-testid="stAppViewContainer"] > .main {
-    background-color: #0a0e14 !important;
+    background: #f5f6f8 !important;
+    font-family: 'Inter', sans-serif !important;
+    color: #1a1d23 !important;
 }
 
-[data-testid="stHeader"] { background: transparent !important; }
-[data-testid="stToolbar"] { display: none !important; }
-.block-container {
-    padding: 0 !important;
-    max-width: 100% !important;
-}
+.block-container { padding: 0 !important; max-width: 100% !important; }
+[data-testid="stHeader"], [data-testid="stToolbar"],
+[data-testid="stDecoration"], #MainMenu, footer { display: none !important; }
 
-/* ── Hero Header ── */
-.hero {
-    background: linear-gradient(135deg, #0d1520 0%, #0a1628 50%, #060d16 100%);
-    border-bottom: 1px solid rgba(56, 139, 253, 0.15);
-    padding: 48px 64px 40px;
-    position: relative;
-    overflow: hidden;
-}
-.hero::before {
-    content: '';
-    position: absolute;
-    top: -120px; right: -120px;
-    width: 400px; height: 400px;
-    background: radial-gradient(circle, rgba(56, 139, 253, 0.08) 0%, transparent 70%);
-    pointer-events: none;
-}
-.hero::after {
-    content: '';
-    position: absolute;
-    bottom: -80px; left: 30%;
-    width: 300px; height: 300px;
-    background: radial-gradient(circle, rgba(0, 210, 190, 0.05) 0%, transparent 70%);
-    pointer-events: none;
-}
-.hero-eyebrow {
-    font-family: 'DM Mono', monospace;
-    font-size: 11px;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    color: #388bfd;
-    margin-bottom: 12px;
-}
-.hero-title {
-    font-family: 'DM Serif Display', serif;
-    font-size: 42px;
-    line-height: 1.1;
-    color: #f0f4ff;
-    margin: 0 0 12px;
-    font-weight: 400;
-}
-.hero-title em {
-    font-style: italic;
-    color: #388bfd;
-}
-.hero-sub {
-    font-size: 15px;
-    color: #7d8590;
-    font-weight: 300;
-    max-width: 540px;
-    line-height: 1.6;
-}
-.hero-badges {
+/* ── Top Bar ── */
+.topbar {
+    background: #ffffff;
+    border-bottom: 1px solid #e2e5ea;
+    padding: 12px 32px;
     display: flex;
-    gap: 10px;
-    margin-top: 24px;
-    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
 }
-.badge {
-    font-family: 'DM Mono', monospace;
+.topbar-left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+.topbar-icon {
+    width: 32px; height: 32px;
+    background: #1a4fba;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+}
+.topbar-title {
+    font-family: 'Playfair Display', serif;
+    font-size: 17px;
+    font-weight: 600;
+    color: #1a1d23;
+    letter-spacing: -0.01em;
+}
+.topbar-sub {
     font-size: 11px;
-    padding: 5px 12px;
-    border-radius: 4px;
-    letter-spacing: 0.05em;
+    color: #8a909c;
+    margin-top: 1px;
+    font-weight: 400;
+    letter-spacing: 0.01em;
 }
-.badge-blue  { background: rgba(56,139,253,0.12); color: #388bfd; border: 1px solid rgba(56,139,253,0.25); }
-.badge-teal  { background: rgba(0,210,190,0.10);  color: #00d2be; border: 1px solid rgba(0,210,190,0.20); }
-.badge-amber { background: rgba(255,176,0,0.10);  color: #ffb000; border: 1px solid rgba(255,176,0,0.20); }
-
-/* ── Main Layout ── */
-.main-content {
-    padding: 40px 64px;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 32px;
-    max-width: 1400px;
-    margin: 0 auto;
-}
-
-/* ── Cards ── */
-.card {
-    background: #0d1520;
-    border: 1px solid rgba(255,255,255,0.07);
-    border-radius: 12px;
-    padding: 28px;
-    position: relative;
-}
-.card-label {
-    font-family: 'DM Mono', monospace;
-    font-size: 10px;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: #7d8590;
-    margin-bottom: 16px;
+.topbar-right {
     display: flex;
     align-items: center;
     gap: 8px;
 }
-.card-label::before {
-    content: '';
-    display: inline-block;
-    width: 20px; height: 1px;
-    background: #388bfd;
+.pill {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    letter-spacing: 0.04em;
+    font-weight: 500;
 }
+.pill-blue  { background: #e8f0fd; color: #1a4fba; }
+.pill-green { background: #e6f6ee; color: #1a7a45; }
+.pill-red   { background: #fdecea; color: #b91c1c; border: 1px solid #fca5a5; }
 
-/* ── Upload Zone ── */
-[data-testid="stFileUploader"] {
-    background: transparent !important;
-}
-[data-testid="stFileUploadDropzone"] {
-    background: rgba(56,139,253,0.04) !important;
-    border: 1.5px dashed rgba(56,139,253,0.25) !important;
-    border-radius: 10px !important;
-    padding: 40px !important;
-    transition: all 0.2s ease !important;
-}
-[data-testid="stFileUploadDropzone"]:hover {
-    background: rgba(56,139,253,0.08) !important;
-    border-color: rgba(56,139,253,0.5) !important;
-}
-[data-testid="stFileUploadDropzone"] p {
-    color: #7d8590 !important;
-    font-size: 14px !important;
-}
-[data-testid="stFileUploadDropzone"] small {
-    color: #4a5260 !important;
-}
-
-/* ── Result Grade Box ── */
-.grade-box {
-    border-radius: 10px;
-    padding: 20px 24px;
-    margin: 16px 0;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    position: relative;
+/* ── Three-column grid ── */
+.app-grid {
+    display: grid;
+    grid-template-columns: 320px 280px 1fr;
+    gap: 0;
+    height: calc(100vh - 57px);
     overflow: hidden;
 }
-.grade-box::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    opacity: 0.06;
-    background: currentColor;
+
+/* ── Panel base ── */
+.panel {
+    background: #ffffff;
+    border-right: 1px solid #e2e5ea;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
 }
-.grade-icon { font-size: 28px; line-height: 1; }
-.grade-info { flex: 1; }
-.grade-name {
-    font-family: 'DM Serif Display', serif;
-    font-size: 22px;
-    font-weight: 400;
-    line-height: 1.2;
+.panel-last { border-right: none; background: #f5f6f8; }
+
+.panel-header {
+    padding: 16px 20px 12px;
+    border-bottom: 1px solid #e2e5ea;
+    flex-shrink: 0;
 }
-.grade-pct {
-    font-family: 'DM Mono', monospace;
-    font-size: 12px;
-    opacity: 0.7;
-    margin-top: 2px;
-}
-.grade-conf {
-    font-family: 'DM Mono', monospace;
-    font-size: 24px;
-    font-weight: 500;
-    text-align: right;
-}
-.grade-conf small {
+.panel-title {
     font-size: 11px;
-    opacity: 0.6;
-    display: block;
-    text-align: right;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #8a909c;
+}
+.panel-body {
+    padding: 16px 20px;
+    flex: 1;
+    overflow-y: auto;
+}
+.panel-body::-webkit-scrollbar { width: 4px; }
+.panel-body::-webkit-scrollbar-thumb { background: #dde0e6; border-radius: 2px; }
+
+/* ── Upload zone ── */
+[data-testid="stFileUploadDropzone"] {
+    background: #f8f9fb !important;
+    border: 1.5px dashed #c5cad4 !important;
+    border-radius: 10px !important;
+    transition: all 0.2s !important;
+}
+[data-testid="stFileUploadDropzone"]:hover {
+    border-color: #1a4fba !important;
+    background: #f0f4fd !important;
+}
+[data-testid="stFileUploadDropzone"] p { color: #8a909c !important; font-size: 13px !important; }
+[data-testid="stFileUploader"] { background: transparent !important; }
+
+/* ── Biopsy image ── */
+[data-testid="stImage"] img {
+    border-radius: 8px !important;
+    border: 1px solid #e2e5ea !important;
+    width: 100% !important;
 }
 
-/* ── Probability Bars ── */
+/* ── Grade result ── */
+.grade-card {
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 16px;
+    border-left: 4px solid;
+}
+.grade-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+}
+.grade-name {
+    font-family: 'Playfair Display', serif;
+    font-size: 20px;
+    font-weight: 600;
+    line-height: 1.2;
+}
+.grade-range {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: #8a909c;
+    margin-top: 3px;
+}
+.grade-conf-big {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 26px;
+    font-weight: 500;
+    line-height: 1;
+    text-align: right;
+}
+.grade-conf-label {
+    font-size: 10px;
+    color: #8a909c;
+    text-align: right;
+    margin-top: 2px;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+/* ── Prob bars ── */
+.prob-section-title {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #8a909c;
+    margin-bottom: 12px;
+}
 .prob-row {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin: 10px 0;
+    gap: 10px;
+    margin-bottom: 9px;
 }
 .prob-label {
-    font-family: 'DM Mono', monospace;
-    font-size: 11px;
-    color: #7d8590;
-    width: 90px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: #6b7280;
+    width: 68px;
     flex-shrink: 0;
 }
 .prob-track {
     flex: 1;
-    height: 6px;
-    background: rgba(255,255,255,0.06);
+    height: 5px;
+    background: #eef0f3;
     border-radius: 3px;
     overflow: hidden;
 }
-.prob-fill {
-    height: 100%;
-    border-radius: 3px;
-    transition: width 0.6s cubic-bezier(0.16,1,0.3,1);
-}
-.prob-value {
-    font-family: 'DM Mono', monospace;
-    font-size: 11px;
-    color: #7d8590;
-    width: 40px;
+.prob-fill { height: 100%; border-radius: 3px; }
+.prob-val {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: #6b7280;
+    width: 36px;
     text-align: right;
     flex-shrink: 0;
 }
 
-/* ── AI Interpretation ── */
-.ai-section {
-    padding: 40px 64px;
-    max-width: 1400px;
-    margin: 0 auto;
+/* ── Grade reference table ── */
+.ref-table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+.ref-table td {
+    padding: 7px 8px;
+    font-size: 11px;
+    border-bottom: 1px solid #f0f1f3;
+    vertical-align: middle;
 }
-.ai-card {
-    background: #0d1520;
-    border: 1px solid rgba(255,255,255,0.07);
+.ref-table tr:last-child td { border-bottom: none; }
+.ref-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 6px;
+    flex-shrink: 0;
+}
+
+/* ── AI panel ── */
+.ai-panel-inner {
+    background: #ffffff;
     border-radius: 12px;
-    padding: 36px 40px;
-    position: relative;
+    border: 1px solid #e2e5ea;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
     overflow: hidden;
 }
-.ai-card::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, #388bfd, #00d2be, transparent);
-}
-.ai-header {
+.ai-panel-head {
+    padding: 16px 22px 14px;
+    border-bottom: 1px solid #e2e5ea;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 28px;
+    flex-shrink: 0;
+    background: #fff;
 }
-.ai-title {
-    font-family: 'DM Serif Display', serif;
-    font-size: 22px;
-    font-weight: 400;
-    color: #f0f4ff;
+.ai-panel-title {
+    font-family: 'Playfair Display', serif;
+    font-size: 15px;
+    font-weight: 600;
+    color: #1a1d23;
 }
-.ai-model-tag {
-    font-family: 'DM Mono', monospace;
-    font-size: 10px;
-    letter-spacing: 0.12em;
-    color: #388bfd;
-    background: rgba(56,139,253,0.1);
-    border: 1px solid rgba(56,139,253,0.2);
-    padding: 4px 10px;
+.ai-model-badge {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    background: #f0f4fd;
+    color: #1a4fba;
+    border: 1px solid #c5d4f5;
+    padding: 3px 9px;
     border-radius: 4px;
+    font-weight: 500;
 }
-.ai-content {
-    color: #c9d1d9;
-    font-size: 14.5px;
-    line-height: 1.8;
-    font-weight: 300;
+.ai-panel-body {
+    padding: 20px 22px;
+    flex: 1;
+    overflow-y: auto;
+    font-size: 13px;
+    line-height: 1.75;
+    color: #374151;
 }
-.ai-content h3, .ai-content strong, .ai-content b {
-    color: #e8eaf0 !important;
+.ai-panel-body::-webkit-scrollbar { width: 4px; }
+.ai-panel-body::-webkit-scrollbar-thumb { background: #dde0e6; border-radius: 2px; }
+.ai-panel-body strong, .ai-panel-body b {
+    color: #111827 !important;
     font-weight: 600 !important;
-    font-family: 'DM Sans', sans-serif !important;
-    font-size: 13px !important;
-    letter-spacing: 0.03em !important;
 }
-.ai-content p { margin: 0 0 16px; }
-.ai-content ol, .ai-content ul {
-    padding-left: 20px;
-    margin: 0 0 16px;
+.ai-panel-body p { margin-bottom: 12px; }
+.ai-panel-body ol, .ai-panel-body ul { padding-left: 18px; margin-bottom: 12px; }
+
+/* ── Awaiting state ── */
+.await-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    gap: 10px;
+    color: #c5cad4;
+    text-align: center;
+    padding: 32px;
 }
+.await-icon { font-size: 36px; opacity: 0.4; }
+.await-text {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #b0b7c3;
+}
+.await-sub { font-size: 12px; color: #b0b7c3; line-height: 1.5; max-width: 200px; }
 
 /* ── Divider ── */
-.section-divider {
+.inner-divider {
     height: 1px;
-    background: rgba(255,255,255,0.05);
-    margin: 0 64px;
+    background: #f0f1f3;
+    margin: 14px 0;
 }
 
-/* ── Footer ── */
-.footer {
-    padding: 24px 64px;
+/* ── Footer strip ── */
+.footer-strip {
+    background: #fff;
+    border-top: 1px solid #e2e5ea;
+    padding: 7px 32px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    border-top: 1px solid rgba(255,255,255,0.05);
-    margin-top: 40px;
-}
-.footer-left {
-    font-family: 'DM Mono', monospace;
-    font-size: 11px;
-    color: #4a5260;
-    letter-spacing: 0.05em;
-}
-.footer-warning {
-    font-size: 11px;
-    color: #4a5260;
-    display: flex;
-    align-items: center;
-    gap: 6px;
+    font-size: 10px;
+    color: #b0b7c3;
+    font-family: 'IBM Plex Mono', monospace;
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
 }
 
-/* ── Streamlit overrides ── */
-[data-testid="stImage"] img {
-    border-radius: 10px !important;
-    border: 1px solid rgba(255,255,255,0.07) !important;
-}
-[data-testid="stSpinner"] > div { color: #388bfd !important; }
-.stSpinner > div > div { border-top-color: #388bfd !important; }
-
-/* Hide default Streamlit elements */
-#MainMenu, footer, header { visibility: hidden !important; }
-[data-testid="stDecoration"] { display: none !important; }
-
-/* ── Expander ── */
-[data-testid="stExpander"] {
-    background: transparent !important;
-    border: 1px solid rgba(255,255,255,0.07) !important;
-    border-radius: 10px !important;
-}
-[data-testid="stExpander"] summary {
-    color: #7d8590 !important;
-    font-size: 13px !important;
-    font-family: 'DM Sans', sans-serif !important;
-}
-
-/* ── Scrollbar ── */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: #0a0e14; }
-::-webkit-scrollbar-thumb { background: #1e2a3a; border-radius: 3px; }
+/* Streamlit spinner color */
+[data-testid="stSpinner"] p { color: #1a4fba !important; font-size: 13px !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Constants ────────────────────────────────────────────────────────────────
+# ── Constants ─────────────────────────────────────────────────────────────────
 N_CLASS    = 4
 MODE       = 1
 IMG_SIZE   = 508
@@ -386,12 +359,12 @@ DEVICE     = "cpu"
 
 CLASS_NAMES  = ["Minimal", "Mild", "Moderate", "Severe"]
 CLASS_RANGE  = ["< 10% fibrosis", "10–25% fibrosis", "25–50% fibrosis", "> 50% fibrosis"]
-CLASS_COLORS = ["#00d2be", "#ffb000", "#ff7b29", "#ff4757"]
-CLASS_ICONS  = ["●", "●", "●", "●"]
+CLASS_COLORS = ["#1a7a45", "#d97706", "#dc6b1a", "#b91c1c"]
+CLASS_BG     = ["#e6f6ee", "#fef3c7", "#fff0e6", "#fdecea"]
+CLASS_BORDER = ["#1a7a45", "#d97706", "#dc6b1a", "#b91c1c"]
 CLASS_SHORT  = ["Minimal (<10%)", "Mild (10–25%)", "Moderate (25–50%)", "Severe (>50%)"]
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# ── Model ────────────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_model():
     net, _ = build_model(N_CLASS, mode=MODE, evaluation=True, path_g=MODEL_PATH)
@@ -465,32 +438,41 @@ Keep each section to 3–5 sentences. End with a one-line disclaimer that this i
     response.raise_for_status()
     return response.json()["choices"][0]["message"]["content"]
 
-# ── Hero ─────────────────────────────────────────────────────────────────────
+# ── Top Bar ───────────────────────────────────────────────────────────────────
 st.markdown("""
-<div class="hero">
-    <div class="hero-eyebrow">Nephropathology · AI-Assisted Analysis</div>
-    <div class="hero-title">Kidney Fibrosis <em>Grader</em></div>
-    <div class="hero-sub">
-        Upload a trichrome-stained biopsy image for automated fibrosis grading
-        and AI-powered clinical interpretation.
+<div class="topbar">
+    <div class="topbar-left">
+        <div class="topbar-icon">🔬</div>
+        <div>
+            <div class="topbar-title">Kidney Fibrosis Grader</div>
+            <div class="topbar-sub">Automated Interstitial Fibrosis Analysis · ResNet-FPN</div>
+        </div>
     </div>
-    <div class="hero-badges">
-        <span class="badge badge-blue">ResNet-FPN Architecture</span>
-        <span class="badge badge-teal">95% Test Accuracy</span>
-        <span class="badge badge-amber">Research Use Only</span>
+    <div class="topbar-right">
+        <span class="pill pill-blue">ResNet-FPN</span>
+        <span class="pill pill-green">95% Accuracy</span>
+        <span class="pill pill-red">Research Only</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
-# ── Main Columns ─────────────────────────────────────────────────────────────
-st.markdown('<div style="padding: 40px 64px 0;">', unsafe_allow_html=True)
+# ── Three columns via Streamlit ───────────────────────────────────────────────
+col1, col2, col3 = st.columns([2.2, 1.9, 3.9], gap="small")
 
-col1, col2 = st.columns([1, 1], gap="large")
+probs = None
+pred  = None
+img   = None
 
+# ── Column 1: Upload + Image ──────────────────────────────────────────────────
 with col1:
-    st.markdown('<div class="card-label">Upload Image</div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div class="panel" style="min-height:calc(100vh - 100px);">
+        <div class="panel-header"><div class="panel-title">Biopsy Image</div></div>
+        <div class="panel-body">
+    """, unsafe_allow_html=True)
+
     uploaded = st.file_uploader(
-        "Drop a trichrome-stained kidney biopsy image",
+        "Upload image",
         type=["jpg", "jpeg", "png"],
         label_visibility="collapsed"
     )
@@ -499,40 +481,67 @@ with col1:
         img = Image.open(uploaded).convert("RGB")
         st.image(img, use_column_width=True)
 
-    with st.expander("Grade Reference Guide"):
-        st.markdown("""
-| Grade | Range | Interpretation |
-|-------|-------|---------------|
-| 🟢 Minimal | < 10% | Early / no significant fibrosis |
-| 🟡 Mild | 10–25% | Mild interstitial fibrosis |
-| 🟠 Moderate | 25–50% | Significant fibrosis present |
-| 🔴 Severe | > 50% | Extensive fibrosis / high ESKD risk |
-        """)
+    st.markdown("""
+        <div class="inner-divider"></div>
+        <div class="prob-section-title">Grade Reference</div>
+        <table class="ref-table">
+            <tr>
+                <td><span class="ref-dot" style="background:#1a7a45;"></span><b>Minimal</b></td>
+                <td style="color:#6b7280;">&lt; 10%</td>
+                <td style="color:#6b7280;">No significant fibrosis</td>
+            </tr>
+            <tr>
+                <td><span class="ref-dot" style="background:#d97706;"></span><b>Mild</b></td>
+                <td style="color:#6b7280;">10–25%</td>
+                <td style="color:#6b7280;">Early interstitial fibrosis</td>
+            </tr>
+            <tr>
+                <td><span class="ref-dot" style="background:#dc6b1a;"></span><b>Moderate</b></td>
+                <td style="color:#6b7280;">25–50%</td>
+                <td style="color:#6b7280;">Significant fibrosis</td>
+            </tr>
+            <tr>
+                <td><span class="ref-dot" style="background:#b91c1c;"></span><b>Severe</b></td>
+                <td style="color:#6b7280;">&gt; 50%</td>
+                <td style="color:#6b7280;">High ESKD risk</td>
+            </tr>
+        </table>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
+# ── Column 2: Grade Result + Probability Bars ─────────────────────────────────
 with col2:
-    if uploaded:
-        st.markdown('<div class="card-label">Analysis Result</div>', unsafe_allow_html=True)
-        with st.spinner("Running inference..."):
+    st.markdown("""
+    <div class="panel" style="min-height:calc(100vh - 100px);">
+        <div class="panel-header"><div class="panel-title">Analysis Result</div></div>
+        <div class="panel-body">
+    """, unsafe_allow_html=True)
+
+    if uploaded and img is not None:
+        with st.spinner("Analyzing..."):
             try:
                 probs = predict(img)
                 pred  = int(np.argmax(probs))
-                color = CLASS_COLORS[pred]
+                c     = CLASS_COLORS[pred]
+                bg    = CLASS_BG[pred]
 
-                # Grade result box
                 st.markdown(f"""
-<div class="grade-box" style="color:{color}; border: 1px solid {color}33; background: {color}0d;">
-    <div class="grade-info">
-        <div class="grade-name">{CLASS_NAMES[pred]}</div>
-        <div class="grade-pct">{CLASS_RANGE[pred]}</div>
-    </div>
-    <div>
-        <div class="grade-conf">{probs[pred]*100:.1f}<small>% confidence</small></div>
+<div class="grade-card" style="background:{bg}; border-left-color:{c};">
+    <div class="grade-top">
+        <div>
+            <div class="grade-name" style="color:{c};">{CLASS_NAMES[pred]}</div>
+            <div class="grade-range">{CLASS_RANGE[pred]}</div>
+        </div>
+        <div>
+            <div class="grade-conf-big" style="color:{c};">{probs[pred]*100:.1f}%</div>
+            <div class="grade-conf-label">Confidence</div>
+        </div>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
-                # Probability breakdown
-                st.markdown('<div class="card-label" style="margin-top:24px;">Probability Distribution</div>', unsafe_allow_html=True)
+                st.markdown('<div class="prob-section-title">Probability Distribution</div>', unsafe_allow_html=True)
                 for i in range(4):
                     pct = probs[i] * 100
                     st.markdown(f"""
@@ -541,71 +550,72 @@ with col2:
     <div class="prob-track">
         <div class="prob-fill" style="width:{pct:.1f}%; background:{CLASS_COLORS[i]};"></div>
     </div>
-    <div class="prob-value">{pct:.1f}%</div>
+    <div class="prob-val">{pct:.1f}%</div>
 </div>
 """, unsafe_allow_html=True)
 
             except Exception as e:
-                st.error(f"Inference error: {str(e)}")
-                st.stop()
+                st.error(f"Error: {str(e)}")
     else:
         st.markdown("""
-<div style="height:320px; display:flex; flex-direction:column; align-items:center;
-     justify-content:center; color:#4a5260; text-align:center; gap:12px;">
-    <div style="font-size:48px; opacity:0.3;">🔬</div>
-    <div style="font-size:13px; font-family:'DM Mono',monospace; letter-spacing:0.05em;">
-        AWAITING IMAGE UPLOAD
-    </div>
-    <div style="font-size:12px; max-width:240px; line-height:1.6; opacity:0.7;">
-        Upload a trichrome-stained biopsy image on the left to begin analysis
+<div class="await-state">
+    <div class="await-icon">📊</div>
+    <div class="await-text">No Analysis Yet</div>
+    <div class="await-sub">Upload a biopsy image to see grading results here</div>
+</div>
+""", unsafe_allow_html=True)
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+# ── Column 3: AI Clinical Interpretation ─────────────────────────────────────
+with col3:
+    st.markdown("""
+    <div style="padding: 0 4px; min-height:calc(100vh - 100px);">
+    <div class="ai-panel-inner">
+        <div class="ai-panel-head">
+            <div class="ai-panel-title">Clinical Interpretation</div>
+            <div class="ai-model-badge">LLAMA 3.3-70B · GROQ</div>
+        </div>
+        <div class="ai-panel-body">
+    """, unsafe_allow_html=True)
+
+    if uploaded and probs is not None and pred is not None:
+        with st.spinner("Generating clinical interpretation..."):
+            try:
+                interpretation = get_ai_interpretation(
+                    grade_label=f"{CLASS_NAMES[pred]} — {CLASS_RANGE[pred]}",
+                    confidence=probs[pred] * 100,
+                    all_probs=probs.tolist()
+                )
+                st.markdown(interpretation)
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 401:
+                    st.error("Groq API key missing. Add GROQ_API_KEY to Streamlit secrets.")
+                elif e.response.status_code == 429:
+                    st.warning("Rate limit reached. Please wait and try again.")
+                else:
+                    st.error(f"AI interpretation unavailable: {str(e)}")
+            except ValueError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"AI interpretation unavailable: {str(e)}")
+    else:
+        st.markdown("""
+<div class="await-state">
+    <div class="await-icon">🤖</div>
+    <div class="await-text">Awaiting Analysis</div>
+    <div class="await-sub">
+        AI clinical interpretation will appear here automatically after image upload and grading
     </div>
 </div>
 """, unsafe_allow_html=True)
 
-st.markdown('</div>', unsafe_allow_html=True)
-
-# ── AI Interpretation ─────────────────────────────────────────────────────────
-if uploaded and 'probs' in dir() and 'pred' in dir():
-    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="ai-section">', unsafe_allow_html=True)
-    st.markdown("""
-<div class="ai-card">
-    <div class="ai-header">
-        <div class="ai-title">Clinical Interpretation</div>
-        <div class="ai-model-tag">LLAMA 3.3 · 70B · GROQ</div>
-    </div>
-""", unsafe_allow_html=True)
-
-    with st.spinner("Generating clinical interpretation..."):
-        try:
-            interpretation = get_ai_interpretation(
-                grade_label=f"{CLASS_NAMES[pred]} — {CLASS_RANGE[pred]}",
-                confidence=probs[pred] * 100,
-                all_probs=probs.tolist()
-            )
-            st.markdown(f'<div class="ai-content">', unsafe_allow_html=True)
-            st.markdown(interpretation)
-            st.markdown('</div>', unsafe_allow_html=True)
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 401:
-                st.error("Groq API key missing or invalid. Add GROQ_API_KEY to your Streamlit secrets.")
-            elif e.response.status_code == 429:
-                st.warning("Rate limit reached. Please wait a moment and try again.")
-            else:
-                st.error(f"AI interpretation unavailable: {str(e)}")
-        except ValueError as e:
-            st.error(str(e))
-        except Exception as e:
-            st.error(f"AI interpretation unavailable: {str(e)}")
-
-    st.markdown('</div></div>', unsafe_allow_html=True)
+    st.markdown("</div></div></div>", unsafe_allow_html=True)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("""
-<div class="footer">
-    <div class="footer-left">KIDNEYGRADE · v2.0 · ResNet-FPN</div>
-    <div class="footer-warning">
-        ⚠ Research use only — not validated for clinical diagnosis
-    </div>
+<div class="footer-strip">
+    <span>KIDNEY FIBROSIS GRADER · ResNet-FPN · 95% TEST ACCURACY</span>
+    <span>⚠ RESEARCH USE ONLY — NOT VALIDATED FOR CLINICAL DIAGNOSIS</span>
 </div>
 """, unsafe_allow_html=True)
