@@ -5,6 +5,8 @@ from PIL import Image
 import torchvision.transforms as transforms
 import sys, os
 import requests
+import base64
+import io
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from utils.model_builder import model as build_model
@@ -336,6 +338,48 @@ section.main,
     letter-spacing: 0.04em;
 }
 
+/* ── VISUAL ANALYSIS SECTION ── */
+.visual-section {
+    margin-top: 28px;
+    border-top: 1px solid #2a3349;
+    padding-top: 24px;
+}
+.visual-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 18px;
+}
+.visual-title {
+    font-family: 'Playfair Display', serif;
+    font-size: 18px;
+    font-weight: 700;
+    color: #e0e6f0;
+}
+.visual-badge {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    background: #1a2d1a;
+    color: #6ee7b7;
+    border: 1px solid #1a4a35;
+    padding: 4px 10px;
+    border-radius: 4px;
+}
+.novel-tag {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    background: #2a1a4a;
+    color: #c084fc;
+    border: 1px solid #4a2a80;
+    padding: 4px 10px;
+    border-radius: 4px;
+    margin-left: 8px;
+}
+
 /* ── Spinner ── */
 [data-testid="stSpinner"] p {
     color: #7eb3ff !important;
@@ -430,6 +474,61 @@ Keep each section to 3-5 sentences. Do not number the sections. End with a brief
     response = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=60)
     response.raise_for_status()
     return response.json()["choices"][0]["message"]["content"]
+
+
+def get_visual_analysis(pil_image, grade_label, confidence):
+    """Send biopsy image to Gemini 2.5 Flash for visual pathology analysis."""
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    if not gemini_key:
+        try:
+            gemini_key = st.secrets["GEMINI_API_KEY"]
+        except Exception:
+            pass
+    if not gemini_key:
+        raise ValueError("GEMINI_API_KEY not configured.")
+
+    # Convert image to base64
+    buffer = io.BytesIO()
+    pil_image.save(buffer, format="JPEG", quality=90)
+    img_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    prompt = f"""You are an expert nephropathologist analyzing a trichrome-stained kidney biopsy image.
+An automated deep learning model has predicted: {grade_label} (model confidence: {confidence:.1f}%).
+
+Carefully examine this biopsy image and provide a structured visual pathology report covering:
+
+**Visual Observations**
+Describe what you can see in the image — collagen deposition patterns (blue/green staining), tubular atrophy, interstitial expansion, glomerular changes, and vascular features. Be specific about the distribution and extent of fibrotic areas visible.
+
+**Agreement with Model Prediction**
+Does what you visually observe agree with the model's predicted grade? Note any areas of the image that particularly support or contradict the predicted grade.
+
+**Histological Features of Note**
+Highlight any specific histological features visible that are clinically significant beyond the fibrosis grade — such as tubular dropout, periglomerular fibrosis, arterial changes, or inflammatory infiltrates.
+
+Be precise and use proper nephropathology terminology. Keep each section to 3-5 sentences. End with a note that this is AI-assisted visual analysis and should be reviewed by a qualified pathologist."""
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent?key={gemini_key}"
+    payload = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {
+                    "inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": img_b64
+                    }
+                }
+            ]
+        }],
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 1000,
+        }
+    }
+    response = requests.post(url, json=payload, timeout=60)
+    response.raise_for_status()
+    return response.json()["candidates"][0]["content"]["parts"][0]["text"]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TOP BAR
@@ -590,6 +689,50 @@ with col3:
     <div class="await-sub">AI clinical interpretation will appear here automatically after the image is graded</div>
 </div>
 """, unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VISUAL ANALYSIS (Gemini 2.5 Flash — image grounded)
+# ─────────────────────────────────────────────────────────────────────────────
+if uploaded and img is not None and probs is not None and pred is not None:
+    st.markdown("""
+<div class="visual-section">
+    <div class="visual-header">
+        <div style="display:flex; align-items:center; gap:10px;">
+            <div class="visual-title">Visual Pathology Analysis</div>
+            <span class="novel-tag">NOVEL</span>
+        </div>
+        <div class="visual-badge">GEMINI 2.5 FLASH &nbsp;·&nbsp; VISION</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+    vcol1, vcol2 = st.columns([1, 2], gap="large")
+
+    with vcol1:
+        st.image(img, use_column_width=True, caption="Analyzed biopsy image")
+
+    with vcol2:
+        with st.spinner("Gemini is analyzing the biopsy image..."):
+            try:
+                visual_report = get_visual_analysis(
+                    pil_image=img,
+                    grade_label=f"{CLASS_NAMES[pred]} — {CLASS_RANGE[pred]}",
+                    confidence=probs[pred] * 100
+                )
+                st.markdown(f'<div class="ai-body">', unsafe_allow_html=True)
+                st.markdown(visual_report)
+                st.markdown('</div>', unsafe_allow_html=True)
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 400:
+                    st.error("Gemini API error — check your API key or image format.")
+                elif e.response.status_code == 429:
+                    st.warning("Gemini rate limit reached. Please wait and retry.")
+                else:
+                    st.error(f"Visual analysis unavailable: {str(e)}")
+            except ValueError as e:
+                st.info(str(e) + " — Get a free key at aistudio.google.com and add GEMINI_API_KEY to Streamlit secrets.")
+            except Exception as e:
+                st.error(f"Visual analysis unavailable: {str(e)}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FOOTER
