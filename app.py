@@ -506,19 +506,19 @@ with col2:
             consensus_label = "FIBROSIS GRADE"
             per_image_block = ""
 
-        st.markdown(f"""
-<div class="grade-card" style="background:{bg}; border-color:{bo};">
-    {per_image_block}
-    <div class="grade-sublabel">{consensus_label}</div>
-    <div class="grade-name" style="color:{c};">{CLASS_NAMES[consensus_pred]}</div>
-    <div class="grade-range">{CLASS_RANGE[consensus_pred]}</div>
-    <div class="grade-divider"></div>
-    <div class="grade-conf-row">
-        <div class="grade-conf-sublabel">Model Confidence</div>
-        <div class="grade-conf-value">{consensus_conf:.1f}%</div>
-    </div>
-</div>
-""", unsafe_allow_html=True)
+        grade_html = (
+            '<div class="grade-card" style="background:' + bg + '; border-color:' + bo + ';">'
+            + per_image_block
+            + '<div class="grade-sublabel">' + consensus_label + '</div>'
+            + '<div class="grade-name" style="color:' + c + ';">' + CLASS_NAMES[consensus_pred] + '</div>'
+            + '<div class="grade-range">' + CLASS_RANGE[consensus_pred] + '</div>'
+            + '<div class="grade-divider"></div>'
+            + '<div class="grade-conf-row">'
+            + '<div class="grade-conf-sublabel">Model Confidence</div>'
+            + '<div class="grade-conf-value">' + f"{consensus_conf:.1f}" + '%</div>'
+            + '</div></div>'
+        )
+        st.markdown(grade_html, unsafe_allow_html=True)
 
         st.markdown('<div class="sec-label">Probability Distribution</div>', unsafe_allow_html=True)
         for i in range(4):
