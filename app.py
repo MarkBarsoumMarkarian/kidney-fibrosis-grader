@@ -260,7 +260,7 @@ IMG_SIZE  = 508
 DEVICE    = "cpu"
 
 CLASS_NAMES  = ["Minimal", "Mild", "Moderate", "Severe"]
-CLASS_RANGE  = ["< 10% fibrosis", "10–25% fibrosis", "25–50% fibrosis", "> 50% fibrosis"]
+CLASS_RANGE  = ["&lt; 10% fibrosis", "10–25% fibrosis", "25–50% fibrosis", "&gt; 50% fibrosis"]
 CLASS_COLORS = ["#16a34a", "#d97706", "#ea580c", "#dc2626"]
 CLASS_BG     = ["#0f2318", "#231a08", "#231208", "#230e0e"]
 CLASS_BORDER = ["#1a4a2a", "#4a3510", "#4a2010", "#4a1010"]
