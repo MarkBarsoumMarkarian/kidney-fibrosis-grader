@@ -250,6 +250,28 @@ section.main,
 }
 
 [data-testid="stSpinner"] p { color: #7eb3ff !important; font-size: 13px !important; }
+
+/* TABS */
+[data-testid="stTabs"] [role="tablist"] {
+    border-bottom: 1px solid #2a3349 !important;
+    gap: 4px !important;
+}
+[data-testid="stTabs"] [role="tab"] {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 11px !important; font-weight: 500 !important;
+    letter-spacing: 0.08em !important; text-transform: uppercase !important;
+    color: #4a5470 !important; background: transparent !important;
+    border: none !important; padding: 8px 16px !important;
+    border-radius: 6px 6px 0 0 !important;
+}
+[data-testid="stTabs"] [role="tab"][aria-selected="true"] {
+    color: #7eb3ff !important;
+    border-bottom: 2px solid #2563eb !important;
+    background: #1a2435 !important;
+}
+[data-testid="stTabs"] [role="tab"]:hover {
+    color: #a0b8d8 !important; background: #1a2435 !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -396,40 +418,43 @@ for key in ["imgs", "all_probs", "all_preds"]:
         st.session_state[key] = None
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ROW 1: Upload | Result
+# TABS
 # ─────────────────────────────────────────────────────────────────────────────
-col1, col2 = st.columns([2.0, 2.2], gap="large")
+tab1, tab2 = st.tabs(["Analysis", "Pathology Report"])
 
-with col1:
-    st.markdown('<div class="sec-label">Biopsy Images (1–3)</div>', unsafe_allow_html=True)
-    uploaded_files = st.file_uploader(
-        "Upload 1–3 biopsy images",
-        type=["jpg", "jpeg", "png"],
-        accept_multiple_files=True,
-        label_visibility="collapsed"
-    )
+with tab1:
+    col1, col2 = st.columns([2.0, 2.2], gap="large")
 
-    if uploaded_files:
-        imgs = [Image.open(f).convert("RGB") for f in uploaded_files[:3]]
-        if imgs != st.session_state.imgs:
-            st.session_state.imgs      = imgs
+    with col1:
+        st.markdown('<div class="sec-label">Biopsy Images (1–3)</div>', unsafe_allow_html=True)
+        uploaded_files = st.file_uploader(
+            "Upload 1–3 biopsy images",
+            type=["jpg", "jpeg", "png"],
+            accept_multiple_files=True,
+            label_visibility="collapsed"
+        )
+
+        if uploaded_files:
+            imgs = [Image.open(f).convert("RGB") for f in uploaded_files[:3]]
+            if imgs != st.session_state.imgs:
+                st.session_state.imgs      = imgs
+                st.session_state.all_probs = None
+                st.session_state.all_preds = None
+
+            if len(imgs) == 1:
+                st.image(imgs[0], use_column_width=True)
+            else:
+                thumb_cols = st.columns(len(imgs))
+                for i, (tc, im) in enumerate(zip(thumb_cols, imgs)):
+                    with tc:
+                        st.image(im, use_column_width=True, caption=f"Image {i+1}")
+        else:
+            st.session_state.imgs      = None
             st.session_state.all_probs = None
             st.session_state.all_preds = None
 
-        if len(imgs) == 1:
-            st.image(imgs[0], use_column_width=True)
-        else:
-            thumb_cols = st.columns(len(imgs))
-            for i, (tc, im) in enumerate(zip(thumb_cols, imgs)):
-                with tc:
-                    st.image(im, use_column_width=True, caption=f"Image {i+1}")
-    else:
-        st.session_state.imgs      = None
-        st.session_state.all_probs = None
-        st.session_state.all_preds = None
-
-    st.markdown('<div class="sec-label" style="margin-top:20px;">Grade Reference</div>', unsafe_allow_html=True)
-    st.markdown("""
+        st.markdown('<div class="sec-label" style="margin-top:20px;">Grade Reference</div>', unsafe_allow_html=True)
+        st.markdown("""
 <div class="card" style="padding:14px 16px;">
     <div class="ref-row">
         <div class="ref-dot" style="background:#16a34a;"></div>
@@ -458,72 +483,69 @@ with col1:
 </div>
 """, unsafe_allow_html=True)
 
-with col2:
-    st.markdown('<div class="sec-label">Analysis Result</div>', unsafe_allow_html=True)
+    with col2:
+        st.markdown('<div class="sec-label">Analysis Result</div>', unsafe_allow_html=True)
 
-    if st.session_state.imgs is not None and st.session_state.all_probs is None:
-        with st.spinner("Analyzing..."):
-            try:
-                all_probs = [predict(im) for im in st.session_state.imgs]
-                all_preds = [int(np.argmax(p)) for p in all_probs]
-                st.session_state.all_probs = all_probs
-                st.session_state.all_preds = all_preds
-            except Exception as e:
-                st.error(f"Inference error: {str(e)}")
+        if st.session_state.imgs is not None and st.session_state.all_probs is None:
+            with st.spinner("Analyzing..."):
+                try:
+                    all_probs = [predict(im) for im in st.session_state.imgs]
+                    all_preds = [int(np.argmax(p)) for p in all_probs]
+                    st.session_state.all_probs = all_probs
+                    st.session_state.all_preds = all_preds
+                except Exception as e:
+                    st.error(f"Inference error: {str(e)}")
 
-    if st.session_state.all_probs is not None:
-        all_probs = st.session_state.all_probs
-        all_preds = st.session_state.all_preds
-        n = len(all_probs)
+        if st.session_state.all_probs is not None:
+            all_probs = st.session_state.all_probs
+            all_preds = st.session_state.all_preds
+            n = len(all_probs)
 
-        # Consensus: average probabilities across all images
-        avg_probs = np.mean(all_probs, axis=0)
-        consensus_pred = int(np.argmax(avg_probs))
-        consensus_conf = avg_probs[consensus_pred] * 100
+            avg_probs = np.mean(all_probs, axis=0)
+            consensus_pred = int(np.argmax(avg_probs))
+            consensus_conf = avg_probs[consensus_pred] * 100
 
-        c  = CLASS_COLORS[consensus_pred]
-        bg = CLASS_BG[consensus_pred]
-        bo = CLASS_BORDER[consensus_pred]
+            c  = CLASS_COLORS[consensus_pred]
+            bg = CLASS_BG[consensus_pred]
+            bo = CLASS_BORDER[consensus_pred]
 
-        # Per-image mini grades if multi-image
-        if n > 1:
-            per_image_html = ""
-            for i in range(n):
-                pi = all_preds[i]
-                pc = CLASS_COLORS[pi]
-                per_image_html += f"""
-<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
-    <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#4a5470; width:56px; flex-shrink:0;">Image {i+1}</div>
-    <div style="width:8px; height:8px; border-radius:50%; background:{pc}; flex-shrink:0;"></div>
-    <div style="font-size:12px; color:{pc}; font-weight:600;">{CLASS_NAMES[pi]}</div>
-    <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#4a5470; margin-left:4px;">{all_probs[i][pi]*100:.1f}%</div>
-</div>"""
-            consensus_label = "CONSENSUS GRADE"
-            per_image_block = f"""
-    <div style="margin-bottom:12px;">{per_image_html}</div>
-    <div class="grade-divider"></div>"""
-        else:
-            consensus_label = "FIBROSIS GRADE"
-            per_image_block = ""
+            if n > 1:
+                per_image_html = ""
+                for i in range(n):
+                    pi = all_preds[i]
+                    pc = CLASS_COLORS[pi]
+                    per_image_html += (
+                        '<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">'
+                        + '<div style="font-family:\'IBM Plex Mono\',monospace; font-size:10px; color:#4a5470; width:56px; flex-shrink:0;">Image ' + str(i+1) + '</div>'
+                        + '<div style="width:8px; height:8px; border-radius:50%; background:' + pc + '; flex-shrink:0;"></div>'
+                        + '<div style="font-size:12px; color:' + pc + '; font-weight:600;">' + CLASS_NAMES[pi] + '</div>'
+                        + '<div style="font-family:\'IBM Plex Mono\',monospace; font-size:10px; color:#4a5470; margin-left:4px;">' + f"{all_probs[i][pi]*100:.1f}" + '%</div>'
+                        + '</div>'
+                    )
+                consensus_label = "CONSENSUS GRADE"
+                per_image_block = '<div style="margin-bottom:12px;">' + per_image_html + '</div><div class="grade-divider"></div>'
+            else:
+                consensus_label = "FIBROSIS GRADE"
+                per_image_block = ""
 
-        grade_html = (
-            '<div class="grade-card" style="background:' + bg + '; border-color:' + bo + ';">'
-            + per_image_block
-            + '<div class="grade-sublabel">' + consensus_label + '</div>'
-            + '<div class="grade-name" style="color:' + c + ';">' + CLASS_NAMES[consensus_pred] + '</div>'
-            + '<div class="grade-range">' + CLASS_RANGE[consensus_pred] + '</div>'
-            + '<div class="grade-divider"></div>'
-            + '<div class="grade-conf-row">'
-            + '<div class="grade-conf-sublabel">Model Confidence</div>'
-            + '<div class="grade-conf-value">' + f"{consensus_conf:.1f}" + '%</div>'
-            + '</div></div>'
-        )
-        st.markdown(grade_html, unsafe_allow_html=True)
+            grade_html = (
+                '<div class="grade-card" style="background:' + bg + '; border-color:' + bo + ';">'
+                + per_image_block
+                + '<div class="grade-sublabel">' + consensus_label + '</div>'
+                + '<div class="grade-name" style="color:' + c + ';">' + CLASS_NAMES[consensus_pred] + '</div>'
+                + '<div class="grade-range">' + CLASS_RANGE[consensus_pred] + '</div>'
+                + '<div class="grade-divider"></div>'
+                + '<div class="grade-conf-row">'
+                + '<div class="grade-conf-sublabel">Model Confidence</div>'
+                + '<div class="grade-conf-value">' + f"{consensus_conf:.1f}" + '%</div>'
+                + '</div></div>'
+            )
+            st.markdown(grade_html, unsafe_allow_html=True)
 
-        st.markdown('<div class="sec-label">Probability Distribution</div>', unsafe_allow_html=True)
-        for i in range(4):
-            pct = avg_probs[i] * 100
-            st.markdown(f"""
+            st.markdown('<div class="sec-label">Probability Distribution</div>', unsafe_allow_html=True)
+            for i in range(4):
+                pct = avg_probs[i] * 100
+                st.markdown(f"""
 <div class="prob-row">
     <div class="prob-name">{CLASS_NAMES[i]}</div>
     <div class="prob-track">
@@ -533,68 +555,73 @@ with col2:
 </div>
 """, unsafe_allow_html=True)
 
-    elif st.session_state.imgs is None:
-        st.markdown("""
+        elif st.session_state.imgs is None:
+            st.markdown("""
 <div class="await-wrap">
     <div class="await-label">No Result Yet</div>
     <div class="await-sub">Upload 1–3 biopsy images to run the analysis</div>
 </div>
 """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# UNIFIED REPORT
-# ─────────────────────────────────────────────────────────────────────────────
-if (st.session_state.imgs is not None and
-        st.session_state.all_probs is not None and
-        st.session_state.all_preds is not None):
+with tab2:
+    if (st.session_state.imgs is not None and
+            st.session_state.all_probs is not None and
+            st.session_state.all_preds is not None):
 
-    all_probs       = st.session_state.all_probs
-    all_preds       = st.session_state.all_preds
-    avg_probs       = np.mean(all_probs, axis=0)
-    consensus_pred  = int(np.argmax(avg_probs))
-    consensus_conf  = avg_probs[consensus_pred] * 100
+        all_probs      = st.session_state.all_probs
+        all_preds      = st.session_state.all_preds
+        avg_probs      = np.mean(all_probs, axis=0)
+        consensus_pred = int(np.argmax(avg_probs))
+        consensus_conf = avg_probs[consensus_pred] * 100
 
-    st.markdown("""
-<div class="visual-section">
-    <div class="visual-header">
-        <div class="visual-title">Pathology Report</div>
-        <div class="visual-badge">LLAMA 4 SCOUT &nbsp;·&nbsp; VISION</div>
-    </div>
+        st.markdown("""
+<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
+    <div style="font-family:'Playfair Display',serif; font-size:18px; font-weight:700; color:#e0e6f0;">Pathology Report</div>
+    <div style="font-family:'IBM Plex Mono',monospace; font-size:9px; font-weight:500; letter-spacing:0.08em;
+                background:#1a2d1a; color:#6ee7b7; border:1px solid #1a4a35; padding:4px 10px; border-radius:4px;">
+        LLAMA 4 SCOUT &nbsp;·&nbsp; VISION</div>
 </div>
 """, unsafe_allow_html=True)
 
-    rcol1, rcol2 = st.columns([1, 2.4], gap="large")
+        rcol1, rcol2 = st.columns([1, 2.4], gap="large")
 
-    with rcol1:
-        for i, im in enumerate(st.session_state.imgs):
-            caption = f"Image {i+1} — {CLASS_NAMES[all_preds[i]]}" if len(st.session_state.imgs) > 1 else "Analyzed biopsy image"
-            st.image(im, use_column_width=True, caption=caption)
+        with rcol1:
+            for i, im in enumerate(st.session_state.imgs):
+                caption = f"Image {i+1} — {CLASS_NAMES[all_preds[i]]}" if len(st.session_state.imgs) > 1 else "Analyzed biopsy image"
+                st.image(im, use_column_width=True, caption=caption)
 
-    with rcol2:
-        with st.spinner("Generating pathology report..."):
-            try:
-                report = get_unified_report(
-                    images=st.session_state.imgs,
-                    all_probs=all_probs,
-                    all_preds=all_preds,
-                    avg_probs=avg_probs,
-                    consensus_pred=consensus_pred,
-                    consensus_conf=consensus_conf,
-                )
-                st.markdown('<div class="ai-body">', unsafe_allow_html=True)
-                st.markdown(report)
-                st.markdown('</div>', unsafe_allow_html=True)
-            except requests.exceptions.HTTPError as e:
-                if e.response.status_code == 401:
-                    st.error("Groq API key missing. Add GROQ_API_KEY to Streamlit secrets.")
-                elif e.response.status_code == 429:
-                    st.warning("Rate limit reached. Please wait a moment and retry.")
-                else:
+        with rcol2:
+            with st.spinner("Generating pathology report..."):
+                try:
+                    report = get_unified_report(
+                        images=st.session_state.imgs,
+                        all_probs=all_probs,
+                        all_preds=all_preds,
+                        avg_probs=avg_probs,
+                        consensus_pred=consensus_pred,
+                        consensus_conf=consensus_conf,
+                    )
+                    st.markdown('<div class="ai-body">', unsafe_allow_html=True)
+                    st.markdown(report)
+                    st.markdown('</div>', unsafe_allow_html=True)
+                except requests.exceptions.HTTPError as e:
+                    if e.response.status_code == 401:
+                        st.error("Groq API key missing. Add GROQ_API_KEY to Streamlit secrets.")
+                    elif e.response.status_code == 429:
+                        st.warning("Rate limit reached. Please wait a moment and retry.")
+                    else:
+                        st.error(f"Report unavailable: {str(e)}")
+                except ValueError as e:
+                    st.error(str(e))
+                except Exception as e:
                     st.error(f"Report unavailable: {str(e)}")
-            except ValueError as e:
-                st.error(str(e))
-            except Exception as e:
-                st.error(f"Report unavailable: {str(e)}")
+    else:
+        st.markdown("""
+<div class="await-wrap">
+    <div class="await-label">No Report Yet</div>
+    <div class="await-sub">Run an analysis in the Analysis tab first</div>
+</div>
+""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FOOTER
