@@ -156,37 +156,49 @@ section.main,
     padding: 18px 20px;
     border: 1px solid;
     margin-bottom: 20px;
+}
+.grade-name {
+    font-family: 'Playfair Display', serif;
+    font-size: 26px;
+    font-weight: 700;
+    line-height: 1.1;
+}
+.grade-sublabel {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #4a5470;
+    margin-bottom: 4px;
+}
+.grade-range {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    color: #7a8490;
+    margin-top: 3px;
+}
+.grade-divider {
+    height: 1px;
+    background: rgba(255,255,255,0.06);
+    margin: 14px 0;
+}
+.grade-conf-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
 }
-.grade-name {
-    font-family: 'Playfair Display', serif;
-    font-size: 24px;
-    font-weight: 700;
-    line-height: 1.1;
-}
-.grade-range {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 11px;
-    color: #7a8490;
-    margin-top: 4px;
-}
-.grade-pct {
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 30px;
-    font-weight: 500;
-    text-align: right;
-    line-height: 1;
-}
-.grade-conf-lbl {
+.grade-conf-sublabel {
     font-size: 10px;
-    color: #5a6480;
     font-weight: 600;
-    letter-spacing: 0.07em;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
-    text-align: right;
-    margin-top: 3px;
+    color: #4a5470;
+}
+.grade-conf-value {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 14px;
+    font-weight: 500;
+    color: #8a9ab0;
 }
 
 /* ── PROB BARS ── */
@@ -391,19 +403,19 @@ Probability breakdown:
 
 Provide a concise clinical interpretation with exactly these 4 sections:
 
-1. **End-Stage Kidney Disease (ESKD) Assessment**
-   Is this grade associated with ESKD, or is it a risk? Be specific.
+**End-Stage Kidney Disease (ESKD) Assessment**
+Is this grade associated with ESKD, or is it a risk? Be specific.
 
-2. **Progression Risk**
-   How likely is this to worsen? What factors drive progression at this level?
+**Progression Risk**
+How likely is this to worsen? What factors drive progression at this level?
 
-3. **Clinical Recommendations**
-   What next steps would a nephrologist consider? (monitoring, interventions, referrals)
+**Clinical Recommendations**
+What next steps would a nephrologist consider? (monitoring, interventions, referrals)
 
-4. **Plain-Language Summary**
-   Explain in simple language suitable for a patient.
+**Plain-Language Summary**
+Explain in simple language suitable for a patient.
 
-Keep each section to 3-5 sentences. End with a brief disclaimer that this is AI-generated and not a substitute for clinical judgment."""
+Keep each section to 3-5 sentences. Do not number the sections. End with a brief disclaimer that this is AI-generated and not a substitute for clinical judgment."""
 
     headers = {
         "Content-Type": "application/json",
@@ -507,13 +519,13 @@ with col2:
 
                 st.markdown(f"""
 <div class="grade-card" style="background:{bg}; border-color:{bo};">
-    <div>
-        <div class="grade-name" style="color:{c};">{CLASS_NAMES[pred]}</div>
-        <div class="grade-range">{CLASS_RANGE[pred]}</div>
-    </div>
-    <div>
-        <div class="grade-pct" style="color:{c};">{probs[pred]*100:.1f}%</div>
-        <div class="grade-conf-lbl">Confidence</div>
+    <div class="grade-sublabel">Fibrosis Grade</div>
+    <div class="grade-name" style="color:{c};">{CLASS_NAMES[pred]}</div>
+    <div class="grade-range">{CLASS_RANGE[pred]}</div>
+    <div class="grade-divider"></div>
+    <div class="grade-conf-row">
+        <div class="grade-conf-sublabel">Model Confidence</div>
+        <div class="grade-conf-value">{probs[pred]*100:.1f}%</div>
     </div>
 </div>
 """, unsafe_allow_html=True)
