@@ -38,7 +38,7 @@ CLASS_COLORS = ["#2ecc71", "#f1c40f", "#e67e22", "#e74c3c"]
 CLASS_ICONS  = ["🟢", "🟡", "🟠", "🔴"]
 CLASS_SHORT  = ["Minimal (<10%)", "Mild (10–25%)", "Moderate (25–50%)", "Severe (>50%)"]
 
-HF_API_URL = "https://api-inference.huggingface.co/models/Qwen/Qwen2.5-72B-Instruct/v1/chat/completions"
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 @st.cache_resource
 def load_model():
@@ -65,15 +65,18 @@ def predict(img):
 
 
 def get_ai_interpretation(grade_label: str, confidence: float, all_probs: list) -> str:
-    """Call Qwen2.5-72B via HuggingFace free Inference API to interpret the fibrosis grade."""
+    """Call Llama-3.3-70B via Groq free API to interpret the fibrosis grade."""
 
-    # Load token from environment or Streamlit secrets (for Streamlit Community Cloud)
-    hf_token = os.environ.get("HF_TOKEN", "")
-    if not hf_token:
+    # Load token from environment or Streamlit secrets
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    if not groq_key:
         try:
-            hf_token = st.secrets["HF_TOKEN"]
+            groq_key = st.secrets["GROQ_API_KEY"]
         except Exception:
             pass
+
+    if not groq_key:
+        raise ValueError("GROQ_API_KEY not found. Add it to your Streamlit secrets.")
 
     prob_breakdown = "\n".join(
         f"  - {CLASS_SHORT[i]}: {all_probs[i]*100:.1f}%"
@@ -105,18 +108,19 @@ Based on this fibrosis grade, provide a concise clinical interpretation covering
 
 Keep each section focused and concise (3–5 sentences). End with a one-line disclaimer that this is AI-generated and not a substitute for clinical judgment."""
 
-    headers = {"Content-Type": "application/json"}
-    if hf_token:
-        headers["Authorization"] = f"Bearer {hf_token}"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {groq_key}",
+    }
 
     payload = {
-        "model": "Qwen/Qwen2.5-72B-Instruct",
+        "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 1000,
         "temperature": 0.3,
     }
 
-    response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=60)
+    response = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=60)
     response.raise_for_status()
     return response.json()["choices"][0]["message"]["content"]
 
@@ -178,7 +182,7 @@ if uploaded:
     # ── AI Interpretation ────────────────────────────────────────────────────
     st.divider()
     st.markdown("### 🤖 AI Clinical Interpretation")
-    st.caption("Powered by Qwen2.5-72B via Hugging Face")
+    st.caption("Powered by Llama 3.3-70B via Groq")
 
     with st.spinner("Generating clinical interpretation..."):
         try:
@@ -190,11 +194,13 @@ if uploaded:
             st.markdown(interpretation)
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 401:
-                st.error("HuggingFace token missing or invalid. Add HF_TOKEN to your Streamlit secrets or environment variables.")
-            elif e.response.status_code == 503:
-                st.warning("Model is loading on HuggingFace servers, please wait 20 seconds and try again.")
+                st.error("Groq API key missing or invalid. Add GROQ_API_KEY to your Streamlit secrets.")
+            elif e.response.status_code == 429:
+                st.warning("Groq rate limit reached. Please wait a moment and try again.")
             else:
                 st.error(f"AI interpretation unavailable: {str(e)}")
+        except ValueError as e:
+            st.error(str(e))
         except Exception as e:
             st.error(f"AI interpretation unavailable: {str(e)}")
 
