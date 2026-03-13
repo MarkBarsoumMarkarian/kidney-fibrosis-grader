@@ -289,56 +289,8 @@ def predict(img):
         probs = torch.softmax(output, dim=1)[0].cpu().numpy()
     return probs
 
-def get_ai_interpretation(grade_label, confidence, all_probs):
-    groq_key = os.environ.get("GROQ_API_KEY", "")
-    if not groq_key:
-        try:
-            groq_key = st.secrets["GROQ_API_KEY"]
-        except Exception:
-            pass
-    if not groq_key:
-        raise ValueError("GROQ_API_KEY not configured.")
-
-    prob_breakdown = "\n".join(
-        f"  - {CLASS_SHORT[i]}: {all_probs[i]*100:.1f}%"
-        for i in range(4)
-    )
-    prompt = f"""You are a nephropathology AI assistant. A deep learning model analyzed a trichrome-stained kidney biopsy image:
-
-Predicted Grade: {grade_label}
-Confidence: {confidence:.1f}%
-Probability breakdown:
-{prob_breakdown}
-
-Provide a concise clinical interpretation with exactly these 4 sections:
-
-**End-Stage Kidney Disease (ESKD) Assessment**
-Is this grade associated with ESKD, or is it a risk? Be specific.
-
-**Progression Risk**
-How likely is this to worsen? What factors drive progression at this level?
-
-**Clinical Recommendations**
-What next steps would a nephrologist consider? (monitoring, interventions, referrals)
-
-**Plain-Language Summary**
-Explain in simple language suitable for a patient.
-
-Keep each section to 3-5 sentences. Do not number the sections. End with a brief disclaimer that this is AI-generated and not a substitute for clinical judgment."""
-
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {groq_key}"}
-    payload = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 1000, "temperature": 0.3,
-    }
-    response = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=60)
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
-
-
-def get_visual_analysis(pil_image, grade_label, confidence):
-    """Send biopsy image to Groq Llama 4 Scout for visual pathology analysis."""
+def get_unified_report(pil_image, grade_label, confidence, all_probs):
+    """Single Llama 4 Scout call: sees the image + grade, returns one cohesive report."""
     groq_key = os.environ.get("GROQ_API_KEY", "")
     if not groq_key:
         try:
@@ -352,21 +304,37 @@ def get_visual_analysis(pil_image, grade_label, confidence):
     pil_image.save(buffer, format="JPEG", quality=90)
     img_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-    prompt = f"""You are an expert nephropathologist analyzing a trichrome-stained kidney biopsy image.
-An automated deep learning model has predicted: {grade_label} (model confidence: {confidence:.1f}%).
+    prob_breakdown = "\n".join(
+        f"  - {CLASS_SHORT[i]}: {all_probs[i]*100:.1f}%"
+        for i in range(4)
+    )
 
-Carefully examine this biopsy image and provide a structured visual pathology report covering:
+    prompt = f"""You are an expert nephropathologist and clinical AI assistant. You are given a trichrome-stained kidney biopsy image alongside automated grading results.
+
+Automated Model Output:
+- Predicted Grade: {grade_label}
+- Model Confidence: {confidence:.1f}%
+- Probability breakdown:
+{prob_breakdown}
+
+Carefully examine the biopsy image and produce a single cohesive clinical report with exactly these 5 sections:
 
 **Visual Observations**
-Describe what you can see — collagen deposition patterns (blue/green staining), tubular atrophy, interstitial expansion, glomerular changes, and vascular features. Be specific about the distribution and extent of fibrotic areas visible.
+Describe what you see in the image — collagen deposition (blue/green staining), tubular atrophy, interstitial expansion, glomerular and vascular changes. Be specific about distribution and extent of fibrotic areas.
 
 **Agreement with Model Prediction**
-Does what you visually observe agree with the model's predicted grade? Note areas of the image that particularly support or contradict the predicted grade.
+Does your visual assessment agree with the predicted grade? Cite specific visual features that support or challenge the model output.
 
-**Histological Features of Note**
-Highlight any specific histological features visible that are clinically significant beyond the fibrosis grade — such as tubular dropout, periglomerular fibrosis, arterial changes, or inflammatory infiltrates.
+**ESKD Risk & Progression**
+What is the risk of end-stage kidney disease at this grade? How likely is progression, and what histological findings drive that risk?
 
-Be precise and use proper nephropathology terminology. Keep each section to 3-5 sentences. End with a note that this is AI-assisted visual analysis and should be reviewed by a qualified pathologist."""
+**Clinical Recommendations**
+What next steps would a nephrologist consider — monitoring intervals, interventions, referrals, or additional workup?
+
+**Plain-Language Summary**
+Explain the findings in simple terms suitable for a patient to understand.
+
+Keep each section to 3-5 sentences. Do not number the sections. End with a brief disclaimer that this is AI-generated multimodal analysis and not a substitute for clinical judgment by a qualified pathologist or nephrologist."""
 
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {groq_key}"}
     payload = {
@@ -378,7 +346,7 @@ Be precise and use proper nephropathology terminology. Keep each section to 3-5 
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
             ]
         }],
-        "max_tokens": 1000,
+        "max_tokens": 1500,
         "temperature": 0.3,
     }
     response = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=60)
@@ -416,7 +384,7 @@ for key in ["probs", "pred", "img"]:
 # ─────────────────────────────────────────────────────────────────────────────
 # ROW 1: Upload | Result | AI Interpretation
 # ─────────────────────────────────────────────────────────────────────────────
-col1, col2, col3 = st.columns([2.0, 1.9, 3.9], gap="large")
+col1, col2 = st.columns([2.0, 2.2], gap="large")
 
 with col1:
     st.markdown('<div class="sec-label">Biopsy Image</div>', unsafe_allow_html=True)
@@ -511,47 +479,10 @@ with col2:
 </div>
 """, unsafe_allow_html=True)
 
-with col3:
-    st.markdown("""
-<div class="ai-header">
-    <div class="ai-title">Clinical Interpretation</div>
-    <div class="ai-badge">LLAMA 3.3-70B &nbsp;·&nbsp; GROQ</div>
-</div>
-""", unsafe_allow_html=True)
 
-    if st.session_state.probs is not None and st.session_state.pred is not None:
-        with st.spinner("Generating clinical interpretation..."):
-            try:
-                p = st.session_state.pred
-                interpretation = get_ai_interpretation(
-                    grade_label=f"{CLASS_NAMES[p]} — {CLASS_RANGE[p]}",
-                    confidence=st.session_state.probs[p] * 100,
-                    all_probs=st.session_state.probs.tolist()
-                )
-                st.markdown('<div class="ai-body">', unsafe_allow_html=True)
-                st.markdown(interpretation)
-                st.markdown('</div>', unsafe_allow_html=True)
-            except requests.exceptions.HTTPError as e:
-                if e.response.status_code == 401:
-                    st.error("Groq API key missing. Add GROQ_API_KEY to Streamlit secrets.")
-                elif e.response.status_code == 429:
-                    st.warning("Rate limit reached. Please wait and retry.")
-                else:
-                    st.error(f"AI unavailable: {str(e)}")
-            except ValueError as e:
-                st.error(str(e))
-            except Exception as e:
-                st.error(f"AI unavailable: {str(e)}")
-    else:
-        st.markdown("""
-<div class="await-wrap">
-    <div class="await-label">Awaiting Analysis</div>
-    <div class="await-sub">AI clinical interpretation will appear here automatically after the image is graded</div>
-</div>
-""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# VISUAL ANALYSIS (Llama 4 Scout — image grounded)
+# UNIFIED REPORT (Llama 4 Scout — image + grade → one cohesive report)
 # ─────────────────────────────────────────────────────────────────────────────
 if st.session_state.img is not None and st.session_state.probs is not None and st.session_state.pred is not None:
     p = st.session_state.pred
@@ -560,7 +491,7 @@ if st.session_state.img is not None and st.session_state.probs is not None and s
 <div class="visual-section">
     <div class="visual-header">
         <div style="display:flex; align-items:center; gap:10px;">
-            <div class="visual-title">Visual Pathology Analysis</div>
+            <div class="visual-title">Pathology Report</div>
             <span class="novel-tag">NOVEL</span>
         </div>
         <div class="visual-badge">LLAMA 4 SCOUT &nbsp;·&nbsp; VISION</div>
@@ -568,33 +499,34 @@ if st.session_state.img is not None and st.session_state.probs is not None and s
 </div>
 """, unsafe_allow_html=True)
 
-    vcol1, vcol2 = st.columns([1, 2], gap="large")
+    rcol1, rcol2 = st.columns([1, 2.4], gap="large")
 
-    with vcol1:
+    with rcol1:
         st.image(st.session_state.img, use_column_width=True, caption="Analyzed biopsy image")
 
-    with vcol2:
-        with st.spinner("Analyzing biopsy image visually..."):
+    with rcol2:
+        with st.spinner("Generating unified pathology report..."):
             try:
-                visual_report = get_visual_analysis(
+                report = get_unified_report(
                     pil_image=st.session_state.img,
                     grade_label=f"{CLASS_NAMES[p]} — {CLASS_RANGE[p]}",
-                    confidence=st.session_state.probs[p] * 100
+                    confidence=st.session_state.probs[p] * 100,
+                    all_probs=st.session_state.probs.tolist()
                 )
                 st.markdown('<div class="ai-body">', unsafe_allow_html=True)
-                st.markdown(visual_report)
+                st.markdown(report)
                 st.markdown('</div>', unsafe_allow_html=True)
             except requests.exceptions.HTTPError as e:
-                if e.response.status_code == 400:
-                    st.error("Vision API error — check your Groq API key.")
+                if e.response.status_code == 401:
+                    st.error("Groq API key missing. Add GROQ_API_KEY to Streamlit secrets.")
                 elif e.response.status_code == 429:
                     st.warning("Rate limit reached. Please wait a moment and retry.")
                 else:
-                    st.error(f"Visual analysis unavailable: {str(e)}")
+                    st.error(f"Report unavailable: {str(e)}")
             except ValueError as e:
                 st.error(str(e))
             except Exception as e:
-                st.error(f"Visual analysis unavailable: {str(e)}")
+                st.error(f"Report unavailable: {str(e)}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FOOTER
