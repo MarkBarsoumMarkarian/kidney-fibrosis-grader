@@ -338,15 +338,15 @@ Keep each section to 3-5 sentences. Do not number the sections. End with a brief
 
 
 def get_visual_analysis(pil_image, grade_label, confidence):
-    """Send biopsy image to Gemini 2.5 Flash for visual pathology analysis."""
-    gemini_key = os.environ.get("GEMINI_API_KEY", "")
-    if not gemini_key:
+    """Send biopsy image to Groq Llama 4 Scout for visual pathology analysis."""
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    if not groq_key:
         try:
-            gemini_key = st.secrets["GEMINI_API_KEY"]
+            groq_key = st.secrets["GROQ_API_KEY"]
         except Exception:
             pass
-    if not gemini_key:
-        raise ValueError("GEMINI_API_KEY not configured.")
+    if not groq_key:
+        raise ValueError("GROQ_API_KEY not configured.")
 
     buffer = io.BytesIO()
     pil_image.save(buffer, format="JPEG", quality=90)
@@ -368,17 +368,22 @@ Highlight any specific histological features visible that are clinically signifi
 
 Be precise and use proper nephropathology terminology. Keep each section to 3-5 sentences. End with a note that this is AI-assisted visual analysis and should be reviewed by a qualified pathologist."""
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {groq_key}"}
     payload = {
-        "contents": [{"parts": [
-            {"text": prompt},
-            {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}}
-        ]}],
-        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1000}
+        "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+            ]
+        }],
+        "max_tokens": 1000,
+        "temperature": 0.3,
     }
-    response = requests.post(url, json=payload, timeout=60)
+    response = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=60)
     response.raise_for_status()
-    return response.json()["candidates"][0]["content"]["parts"][0]["text"]
+    return response.json()["choices"][0]["message"]["content"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -546,7 +551,7 @@ with col3:
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# VISUAL ANALYSIS (Gemini 2.5 Flash — image grounded)
+# VISUAL ANALYSIS (Llama 4 Scout — image grounded)
 # ─────────────────────────────────────────────────────────────────────────────
 if st.session_state.img is not None and st.session_state.probs is not None and st.session_state.pred is not None:
     p = st.session_state.pred
@@ -558,7 +563,7 @@ if st.session_state.img is not None and st.session_state.probs is not None and s
             <div class="visual-title">Visual Pathology Analysis</div>
             <span class="novel-tag">NOVEL</span>
         </div>
-        <div class="visual-badge">GEMINI 2.5 FLASH &nbsp;·&nbsp; VISION</div>
+        <div class="visual-badge">LLAMA 4 SCOUT &nbsp;·&nbsp; VISION</div>
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -569,7 +574,7 @@ if st.session_state.img is not None and st.session_state.probs is not None and s
         st.image(st.session_state.img, use_column_width=True, caption="Analyzed biopsy image")
 
     with vcol2:
-        with st.spinner("Gemini is analyzing the biopsy image..."):
+        with st.spinner("Analyzing biopsy image visually..."):
             try:
                 visual_report = get_visual_analysis(
                     pil_image=st.session_state.img,
@@ -581,13 +586,13 @@ if st.session_state.img is not None and st.session_state.probs is not None and s
                 st.markdown('</div>', unsafe_allow_html=True)
             except requests.exceptions.HTTPError as e:
                 if e.response.status_code == 400:
-                    st.error("Gemini API error — check your API key.")
+                    st.error("Vision API error — check your Groq API key.")
                 elif e.response.status_code == 429:
-                    st.warning("Gemini rate limit reached. Please wait and retry.")
+                    st.warning("Rate limit reached. Please wait a moment and retry.")
                 else:
                     st.error(f"Visual analysis unavailable: {str(e)}")
             except ValueError as e:
-                st.info(str(e) + " — Get a free key at aistudio.google.com and add GEMINI_API_KEY to Streamlit secrets.")
+                st.error(str(e))
             except Exception as e:
                 st.error(f"Visual analysis unavailable: {str(e)}")
 
