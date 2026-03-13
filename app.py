@@ -123,6 +123,7 @@ section.main,
 /* IMAGE */
 [data-testid="stImage"] img {
     border-radius: 8px !important; border: 1px solid #2a3549 !important; width: 100% !important;
+    max-height: 320px !important; object-fit: cover !important;
 }
 
 /* GRADE CARD */
@@ -253,24 +254,31 @@ section.main,
 
 /* TABS */
 [data-testid="stTabs"] [role="tablist"] {
-    border-bottom: 1px solid #2a3349 !important;
-    gap: 4px !important;
+    border-bottom: 2px solid #2a3349 !important;
+    gap: 6px !important; margin-bottom: 20px !important;
 }
 [data-testid="stTabs"] [role="tab"] {
     font-family: 'IBM Plex Mono', monospace !important;
-    font-size: 11px !important; font-weight: 500 !important;
-    letter-spacing: 0.08em !important; text-transform: uppercase !important;
-    color: #4a5470 !important; background: transparent !important;
-    border: none !important; padding: 8px 16px !important;
+    font-size: 12px !important; font-weight: 600 !important;
+    letter-spacing: 0.1em !important; text-transform: uppercase !important;
+    color: #5a6890 !important; background: #1a2333 !important;
+    border: 1px solid #2a3349 !important; padding: 10px 24px !important;
     border-radius: 6px 6px 0 0 !important;
 }
 [data-testid="stTabs"] [role="tab"][aria-selected="true"] {
-    color: #7eb3ff !important;
-    border-bottom: 2px solid #2563eb !important;
-    background: #1a2435 !important;
+    color: #e8edf5 !important;
+    border-color: #2563eb !important;
+    border-bottom: 2px solid #1c2333 !important;
+    background: #202b3d !important;
 }
 [data-testid="stTabs"] [role="tab"]:hover {
-    color: #a0b8d8 !important; background: #1a2435 !important;
+    color: #a0b8d8 !important; background: #1e2840 !important;
+}
+/* Tab label for Pathology Report — add subtle indicator */
+[data-testid="stTabs"] [role="tab"]:nth-child(2)::after {
+    content: ' →';
+    color: #2563eb;
+    font-size: 11px;
 }
 </style>
 """, unsafe_allow_html=True)
