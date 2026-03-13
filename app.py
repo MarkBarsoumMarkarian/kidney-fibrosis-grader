@@ -31,7 +31,6 @@ st.markdown("""
 
 *, *::before, *::after { box-sizing: border-box; }
 
-/* ── Base background: warm dark slate ── */
 html, body,
 [data-testid="stAppViewContainer"],
 [data-testid="stAppViewContainer"] > .main,
@@ -56,7 +55,7 @@ section.main,
     visibility: hidden !important;
 }
 
-/* ── TOP BAR ── */
+/* TOP BAR */
 .topbar {
     background: #141b2d;
     border-bottom: 1px solid #2a3349;
@@ -73,318 +72,184 @@ section.main,
     background: #2563eb;
     border-radius: 7px;
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 11px;
-    font-weight: 700;
-    color: #fff;
+    font-size: 11px; font-weight: 700; color: #fff;
     display: flex; align-items: center; justify-content: center;
     letter-spacing: -0.5px;
 }
 .topbar-name {
     font-family: 'Playfair Display', serif;
-    font-size: 16px;
-    font-weight: 700;
-    color: #e8edf5;
+    font-size: 16px; font-weight: 700; color: #e8edf5;
 }
-.topbar-desc {
-    font-size: 10px;
-    color: #5a6480;
-    margin-top: 1px;
-    letter-spacing: 0.02em;
-}
+.topbar-desc { font-size: 10px; color: #5a6480; margin-top: 1px; letter-spacing: 0.02em; }
 .topbar-pills { display: flex; gap: 8px; }
 .tpill {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 10px;
-    font-weight: 500;
-    padding: 4px 10px;
-    border-radius: 4px;
-    letter-spacing: 0.04em;
-    border: 1px solid;
+    font-size: 10px; font-weight: 500;
+    padding: 4px 10px; border-radius: 4px;
+    letter-spacing: 0.04em; border: 1px solid;
 }
 .tpill-blue  { color: #7eb3ff; border-color: #2a4a80; background: #1a2d4a; }
 .tpill-green { color: #6ee7b7; border-color: #1a4a35; background: #102a20; }
 .tpill-amber { color: #fbbf24; border-color: #4a3510; background: #2a1e08; }
 
-/* ── SECTION LABEL ── */
+/* SECTION LABEL */
 .sec-label {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: #4a5470;
-    margin-bottom: 10px;
-    margin-top: 2px;
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: #4a5470; margin-bottom: 10px; margin-top: 2px;
 }
 
-/* ── CARD ── */
+/* CARD */
 .card {
-    background: #202b3d;
-    border: 1px solid #2a3549;
-    border-radius: 10px;
-    padding: 20px;
-    margin-bottom: 16px;
+    background: #202b3d; border: 1px solid #2a3549;
+    border-radius: 10px; padding: 20px; margin-bottom: 16px;
 }
 
-/* ── UPLOAD ZONE ── */
+/* UPLOAD ZONE */
 [data-testid="stFileUploader"] { background: transparent !important; }
 [data-testid="stFileUploadDropzone"] {
     background: #1a2435 !important;
     border: 2px dashed #2e3f5c !important;
     border-radius: 10px !important;
-    padding: 28px !important;
-    transition: all 0.2s !important;
+    padding: 28px !important; transition: all 0.2s !important;
 }
 [data-testid="stFileUploadDropzone"]:hover {
-    border-color: #2563eb !important;
-    background: #1a2845 !important;
+    border-color: #2563eb !important; background: #1a2845 !important;
 }
-[data-testid="stFileUploadDropzone"] p {
-    color: #5a6480 !important;
-    font-size: 13px !important;
-}
+[data-testid="stFileUploadDropzone"] p { color: #5a6480 !important; font-size: 13px !important; }
 [data-testid="stFileUploadDropzone"] small { color: #3a4460 !important; }
 [data-testid="stFileUploadDropzone"] svg { fill: #2e3f5c !important; }
 
-/* ── IMAGE ── */
+/* IMAGE */
 [data-testid="stImage"] img {
-    border-radius: 8px !important;
-    border: 1px solid #2a3549 !important;
-    width: 100% !important;
+    border-radius: 8px !important; border: 1px solid #2a3549 !important; width: 100% !important;
 }
 
-/* ── GRADE CARD ── */
+/* GRADE CARD */
 .grade-card {
-    border-radius: 10px;
-    padding: 18px 20px;
-    border: 1px solid;
-    margin-bottom: 20px;
+    border-radius: 10px; padding: 18px 20px; border: 1px solid; margin-bottom: 20px;
 }
 .grade-name {
     font-family: 'Playfair Display', serif;
-    font-size: 26px;
-    font-weight: 700;
-    line-height: 1.1;
+    font-size: 26px; font-weight: 700; line-height: 1.1;
 }
 .grade-sublabel {
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: #4a5470;
-    margin-bottom: 4px;
+    font-size: 10px; font-weight: 600; letter-spacing: 0.1em;
+    text-transform: uppercase; color: #4a5470; margin-bottom: 4px;
 }
 .grade-range {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 12px;
-    color: #7a8490;
-    margin-top: 3px;
+    font-size: 12px; color: #7a8490; margin-top: 3px;
 }
-.grade-divider {
-    height: 1px;
-    background: rgba(255,255,255,0.06);
-    margin: 14px 0;
-}
-.grade-conf-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
+.grade-divider { height: 1px; background: rgba(255,255,255,0.06); margin: 14px 0; }
+.grade-conf-row { display: flex; align-items: center; justify-content: space-between; }
 .grade-conf-sublabel {
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: #4a5470;
+    font-size: 10px; font-weight: 600; letter-spacing: 0.1em;
+    text-transform: uppercase; color: #4a5470;
 }
 .grade-conf-value {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 14px;
-    font-weight: 500;
-    color: #8a9ab0;
+    font-size: 14px; font-weight: 500; color: #8a9ab0;
 }
 
-/* ── PROB BARS ── */
-.prob-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 11px;
-}
+/* PROB BARS */
+.prob-row { display: flex; align-items: center; gap: 10px; margin-bottom: 11px; }
 .prob-name {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 10px;
-    color: #5a6480;
-    width: 62px;
-    flex-shrink: 0;
-    font-weight: 500;
+    font-size: 10px; color: #5a6480; width: 62px; flex-shrink: 0; font-weight: 500;
 }
-.prob-track {
-    flex: 1;
-    height: 6px;
-    background: #1a2435;
-    border-radius: 3px;
-    overflow: hidden;
-}
+.prob-track { flex: 1; height: 6px; background: #1a2435; border-radius: 3px; overflow: hidden; }
 .prob-fill { height: 100%; border-radius: 3px; }
 .prob-pct {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 10px;
-    color: #5a6480;
-    width: 38px;
-    text-align: right;
-    flex-shrink: 0;
+    font-size: 10px; color: #5a6480; width: 38px; text-align: right; flex-shrink: 0;
 }
 
-/* ── GRADE REF ── */
+/* GRADE REF */
 .ref-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 7px 0;
-    border-bottom: 1px solid #242f42;
-    font-size: 12px;
-    color: #8a9ab0;
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 0; border-bottom: 1px solid #242f42;
+    font-size: 12px; color: #8a9ab0;
 }
 .ref-row:last-child { border-bottom: none; }
-.ref-dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-}
+.ref-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .ref-grade { font-weight: 600; color: #b0bac8; width: 64px; flex-shrink: 0; }
 .ref-range {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 10px;
-    color: #4a5470;
-    width: 60px;
-    flex-shrink: 0;
+    font-size: 10px; color: #4a5470; width: 60px; flex-shrink: 0;
 }
 .ref-desc { color: #5a6880; font-size: 11px; }
 
-/* ── AI SECTION ── */
+/* AI SECTION */
 .ai-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 18px;
-    padding-bottom: 14px;
-    border-bottom: 1px solid #2a3549;
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid #2a3549;
 }
 .ai-title {
     font-family: 'Playfair Display', serif;
-    font-size: 18px;
-    font-weight: 700;
-    color: #e0e6f0;
+    font-size: 18px; font-weight: 700; color: #e0e6f0;
 }
 .ai-badge {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 9px;
-    font-weight: 500;
-    letter-spacing: 0.08em;
-    background: #1a2845;
-    color: #7eb3ff;
-    border: 1px solid #2a4a80;
-    padding: 4px 10px;
-    border-radius: 4px;
+    font-size: 9px; font-weight: 500; letter-spacing: 0.08em;
+    background: #1a2845; color: #7eb3ff;
+    border: 1px solid #2a4a80; padding: 4px 10px; border-radius: 4px;
 }
-.ai-body {
-    font-size: 13.5px;
-    line-height: 1.8;
-    color: #9aa8bc;
-}
-.ai-body strong, .ai-body b {
-    color: #c8d4e4 !important;
-    font-weight: 600 !important;
-}
+.ai-body { font-size: 13.5px; line-height: 1.8; color: #9aa8bc; }
+.ai-body strong, .ai-body b { color: #c8d4e4 !important; font-weight: 600 !important; }
 .ai-body p { margin-bottom: 14px; }
 .ai-body ol, .ai-body ul { padding-left: 18px; margin-bottom: 14px; }
 .ai-body li { margin-bottom: 4px; }
 
-/* ── AWAIT STATE ── */
+/* AWAIT STATE */
 .await-wrap {
-    background: #202b3d;
-    border: 1px solid #2a3549;
-    border-radius: 10px;
-    padding: 40px 20px;
-    text-align: center;
+    background: #202b3d; border: 1px solid #2a3549;
+    border-radius: 10px; padding: 40px 20px; text-align: center;
 }
 .await-label {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 11px;
-    font-weight: 500;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: #3a4460;
-    margin-bottom: 8px;
+    font-size: 11px; font-weight: 500; letter-spacing: 0.1em;
+    text-transform: uppercase; color: #3a4460; margin-bottom: 8px;
 }
-.await-sub {
-    font-size: 12px;
-    color: #3a4460;
-    line-height: 1.6;
-}
+.await-sub { font-size: 12px; color: #3a4460; line-height: 1.6; }
 
-/* ── FOOTER ── */
-.footer {
-    margin: 24px -32px -32px -32px;
-    background: #141b2d;
-    border-top: 1px solid #2a3349;
-    padding: 10px 32px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 10px;
-    color: #3a4460;
-    letter-spacing: 0.04em;
-}
-
-/* ── VISUAL ANALYSIS SECTION ── */
+/* VISUAL ANALYSIS SECTION */
 .visual-section {
-    margin-top: 28px;
-    border-top: 1px solid #2a3349;
-    padding-top: 24px;
+    margin-top: 28px; border-top: 1px solid #2a3349; padding-top: 24px;
 }
 .visual-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 18px;
+    display: flex; align-items: center;
+    justify-content: space-between; margin-bottom: 18px;
 }
 .visual-title {
     font-family: 'Playfair Display', serif;
-    font-size: 18px;
-    font-weight: 700;
-    color: #e0e6f0;
+    font-size: 18px; font-weight: 700; color: #e0e6f0;
 }
 .visual-badge {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 9px;
-    font-weight: 500;
-    letter-spacing: 0.08em;
-    background: #1a2d1a;
-    color: #6ee7b7;
-    border: 1px solid #1a4a35;
-    padding: 4px 10px;
-    border-radius: 4px;
+    font-size: 9px; font-weight: 500; letter-spacing: 0.08em;
+    background: #1a2d1a; color: #6ee7b7;
+    border: 1px solid #1a4a35; padding: 4px 10px; border-radius: 4px;
 }
 .novel-tag {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    background: #2a1a4a;
-    color: #c084fc;
-    border: 1px solid #4a2a80;
-    padding: 4px 10px;
-    border-radius: 4px;
-    margin-left: 8px;
+    font-size: 9px; font-weight: 700; letter-spacing: 0.1em;
+    background: #2a1a4a; color: #c084fc;
+    border: 1px solid #4a2a80; padding: 4px 10px;
+    border-radius: 4px; margin-left: 8px;
 }
 
-/* ── Spinner ── */
-[data-testid="stSpinner"] p {
-    color: #7eb3ff !important;
-    font-size: 13px !important;
+/* FOOTER */
+.footer {
+    margin: 24px -32px -32px -32px;
+    background: #141b2d; border-top: 1px solid #2a3349;
+    padding: 10px 32px; display: flex;
+    align-items: center; justify-content: space-between;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px; color: #3a4460; letter-spacing: 0.04em;
 }
+
+[data-testid="stSpinner"] p { color: #7eb3ff !important; font-size: 13px !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -461,15 +326,11 @@ Explain in simple language suitable for a patient.
 
 Keep each section to 3-5 sentences. Do not number the sections. End with a brief disclaimer that this is AI-generated and not a substitute for clinical judgment."""
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {groq_key}",
-    }
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {groq_key}"}
     payload = {
         "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 1000,
-        "temperature": 0.3,
+        "max_tokens": 1000, "temperature": 0.3,
     }
     response = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=60)
     response.raise_for_status()
@@ -487,7 +348,6 @@ def get_visual_analysis(pil_image, grade_label, confidence):
     if not gemini_key:
         raise ValueError("GEMINI_API_KEY not configured.")
 
-    # Convert image to base64
     buffer = io.BytesIO()
     pil_image.save(buffer, format="JPEG", quality=90)
     img_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
@@ -498,10 +358,10 @@ An automated deep learning model has predicted: {grade_label} (model confidence:
 Carefully examine this biopsy image and provide a structured visual pathology report covering:
 
 **Visual Observations**
-Describe what you can see in the image — collagen deposition patterns (blue/green staining), tubular atrophy, interstitial expansion, glomerular changes, and vascular features. Be specific about the distribution and extent of fibrotic areas visible.
+Describe what you can see — collagen deposition patterns (blue/green staining), tubular atrophy, interstitial expansion, glomerular changes, and vascular features. Be specific about the distribution and extent of fibrotic areas visible.
 
 **Agreement with Model Prediction**
-Does what you visually observe agree with the model's predicted grade? Note any areas of the image that particularly support or contradict the predicted grade.
+Does what you visually observe agree with the model's predicted grade? Note areas of the image that particularly support or contradict the predicted grade.
 
 **Histological Features of Note**
 Highlight any specific histological features visible that are clinically significant beyond the fibrosis grade — such as tubular dropout, periglomerular fibrosis, arterial changes, or inflammatory infiltrates.
@@ -510,25 +370,16 @@ Be precise and use proper nephropathology terminology. Keep each section to 3-5 
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent?key={gemini_key}"
     payload = {
-        "contents": [{
-            "parts": [
-                {"text": prompt},
-                {
-                    "inline_data": {
-                        "mime_type": "image/jpeg",
-                        "data": img_b64
-                    }
-                }
-            ]
-        }],
-        "generationConfig": {
-            "temperature": 0.3,
-            "maxOutputTokens": 1000,
-        }
+        "contents": [{"parts": [
+            {"text": prompt},
+            {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}}
+        ]}],
+        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1000}
     }
     response = requests.post(url, json=payload, timeout=60)
     response.raise_for_status()
     return response.json()["candidates"][0]["content"]["parts"][0]["text"]
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TOP BAR
@@ -551,11 +402,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STATE
+# SESSION STATE — persists values across column boundaries
 # ─────────────────────────────────────────────────────────────────────────────
-probs = None
-pred  = None
-img   = None
+for key in ["probs", "pred", "img"]:
+    if key not in st.session_state:
+        st.session_state[key] = None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ROW 1: Upload | Result | AI Interpretation
@@ -570,10 +421,13 @@ with col1:
         label_visibility="collapsed"
     )
     if uploaded:
-        img = Image.open(uploaded).convert("RGB")
-        st.image(img, use_column_width=True)
+        st.session_state.img   = Image.open(uploaded).convert("RGB")
+        st.session_state.probs = None  # reset so model re-runs on new image
+        st.session_state.pred  = None
 
-    # Grade reference
+    if st.session_state.img is not None:
+        st.image(st.session_state.img, use_column_width=True)
+
     st.markdown('<div class="sec-label" style="margin-top:20px;">Grade Reference</div>', unsafe_allow_html=True)
     st.markdown("""
 <div class="card" style="padding:14px 16px;">
@@ -606,33 +460,36 @@ with col1:
 
 with col2:
     st.markdown('<div class="sec-label">Analysis Result</div>', unsafe_allow_html=True)
-
-    if uploaded and img is not None:
+    if st.session_state.img is not None and st.session_state.probs is None:
         with st.spinner("Analyzing..."):
             try:
-                probs = predict(img)
-                pred  = int(np.argmax(probs))
-                c   = CLASS_COLORS[pred]
-                bg  = CLASS_BG[pred]
-                bo  = CLASS_BORDER[pred]
+                st.session_state.probs = predict(st.session_state.img)
+                st.session_state.pred  = int(np.argmax(st.session_state.probs))
+            except Exception as e:
+                st.error(f"Inference error: {str(e)}")
 
-                st.markdown(f"""
+    # Display results if we have them (whether just computed or from session state)
+    if st.session_state.probs is not None and st.session_state.pred is not None:
+        p  = st.session_state.pred
+        c  = CLASS_COLORS[p]
+        bg = CLASS_BG[p]
+        bo = CLASS_BORDER[p]
+        st.markdown(f"""
 <div class="grade-card" style="background:{bg}; border-color:{bo};">
     <div class="grade-sublabel">Fibrosis Grade</div>
-    <div class="grade-name" style="color:{c};">{CLASS_NAMES[pred]}</div>
-    <div class="grade-range">{CLASS_RANGE[pred]}</div>
+    <div class="grade-name" style="color:{c};">{CLASS_NAMES[p]}</div>
+    <div class="grade-range">{CLASS_RANGE[p]}</div>
     <div class="grade-divider"></div>
     <div class="grade-conf-row">
         <div class="grade-conf-sublabel">Model Confidence</div>
-        <div class="grade-conf-value">{probs[pred]*100:.1f}%</div>
+        <div class="grade-conf-value">{st.session_state.probs[p]*100:.1f}%</div>
     </div>
 </div>
 """, unsafe_allow_html=True)
-
-                st.markdown('<div class="sec-label">Probability Distribution</div>', unsafe_allow_html=True)
-                for i in range(4):
-                    pct = probs[i] * 100
-                    st.markdown(f"""
+        st.markdown('<div class="sec-label">Probability Distribution</div>', unsafe_allow_html=True)
+        for i in range(4):
+            pct = st.session_state.probs[i] * 100
+            st.markdown(f"""
 <div class="prob-row">
     <div class="prob-name">{CLASS_NAMES[i]}</div>
     <div class="prob-track">
@@ -641,10 +498,7 @@ with col2:
     <div class="prob-pct">{pct:.1f}%</div>
 </div>
 """, unsafe_allow_html=True)
-
-            except Exception as e:
-                st.error(f"Inference error: {str(e)}")
-    else:
+    elif st.session_state.img is None:
         st.markdown("""
 <div class="await-wrap">
     <div class="await-label">No Result Yet</div>
@@ -660,15 +514,16 @@ with col3:
 </div>
 """, unsafe_allow_html=True)
 
-    if uploaded and probs is not None and pred is not None:
+    if st.session_state.probs is not None and st.session_state.pred is not None:
         with st.spinner("Generating clinical interpretation..."):
             try:
+                p = st.session_state.pred
                 interpretation = get_ai_interpretation(
-                    grade_label=f"{CLASS_NAMES[pred]} — {CLASS_RANGE[pred]}",
-                    confidence=probs[pred] * 100,
-                    all_probs=probs.tolist()
+                    grade_label=f"{CLASS_NAMES[p]} — {CLASS_RANGE[p]}",
+                    confidence=st.session_state.probs[p] * 100,
+                    all_probs=st.session_state.probs.tolist()
                 )
-                st.markdown(f'<div class="ai-body">', unsafe_allow_html=True)
+                st.markdown('<div class="ai-body">', unsafe_allow_html=True)
                 st.markdown(interpretation)
                 st.markdown('</div>', unsafe_allow_html=True)
             except requests.exceptions.HTTPError as e:
@@ -693,7 +548,9 @@ with col3:
 # ─────────────────────────────────────────────────────────────────────────────
 # VISUAL ANALYSIS (Gemini 2.5 Flash — image grounded)
 # ─────────────────────────────────────────────────────────────────────────────
-if uploaded and img is not None and probs is not None and pred is not None:
+if st.session_state.img is not None and st.session_state.probs is not None and st.session_state.pred is not None:
+    p = st.session_state.pred
+
     st.markdown("""
 <div class="visual-section">
     <div class="visual-header">
@@ -709,22 +566,22 @@ if uploaded and img is not None and probs is not None and pred is not None:
     vcol1, vcol2 = st.columns([1, 2], gap="large")
 
     with vcol1:
-        st.image(img, use_column_width=True, caption="Analyzed biopsy image")
+        st.image(st.session_state.img, use_column_width=True, caption="Analyzed biopsy image")
 
     with vcol2:
         with st.spinner("Gemini is analyzing the biopsy image..."):
             try:
                 visual_report = get_visual_analysis(
-                    pil_image=img,
-                    grade_label=f"{CLASS_NAMES[pred]} — {CLASS_RANGE[pred]}",
-                    confidence=probs[pred] * 100
+                    pil_image=st.session_state.img,
+                    grade_label=f"{CLASS_NAMES[p]} — {CLASS_RANGE[p]}",
+                    confidence=st.session_state.probs[p] * 100
                 )
-                st.markdown(f'<div class="ai-body">', unsafe_allow_html=True)
+                st.markdown('<div class="ai-body">', unsafe_allow_html=True)
                 st.markdown(visual_report)
                 st.markdown('</div>', unsafe_allow_html=True)
             except requests.exceptions.HTTPError as e:
                 if e.response.status_code == 400:
-                    st.error("Gemini API error — check your API key or image format.")
+                    st.error("Gemini API error — check your API key.")
                 elif e.response.status_code == 429:
                     st.warning("Gemini rate limit reached. Please wait and retry.")
                 else:
