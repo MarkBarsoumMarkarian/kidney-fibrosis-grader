@@ -70,7 +70,7 @@ A `.devcontainer` config is included for VS Code devcontainer or GitHub Codespac
 
 ## Limitations
 
-- Research and educational tool only — not validated for clinical use
+- Research and educational tool only, not validated for clinical use
 - Performance depends on image quality and staining consistency
 - LLM-generated reports should not replace pathologist review
 
