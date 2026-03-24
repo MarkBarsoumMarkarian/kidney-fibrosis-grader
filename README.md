@@ -19,10 +19,10 @@ Interstitial fibrosis and tubular atrophy (IFTA) grading is a critical step in k
 | Interface | Streamlit web app |
 
 **Grading scale:**
-- **Grade 0** — No fibrosis (less than 5% cortical area)
-- **Grade 1** — Mild fibrosis (5-25%)
-- **Grade 2** — Moderate fibrosis (26-50%)
-- **Grade 3** — Severe fibrosis (more than 50%)
+- **Grade 0**: No fibrosis (less than 5% cortical area)
+- **Grade 1**: Mild fibrosis (5-25%)
+- **Grade 2**: Moderate fibrosis (26-50%)
+- **Grade 3**: Severe fibrosis (more than 50%)
 
 ---
 
