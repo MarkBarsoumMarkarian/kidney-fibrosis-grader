@@ -28,7 +28,7 @@ Interstitial fibrosis and tubular atrophy (IFTA) grading is a critical step in k
 
 ## Architecture
 
-Adapts the [vkola-lab/ajpa2021](https://github.com/vkola-lab/ajpa2021) ResNet-FPN, originally built for whole-slide images (.svs), for standard JPG/PNG input. OpenSlide replaced with PIL — no WSI dependencies, runs on standard hardware including CPU-only.
+Adapts the [vkola-lab/ajpa2021](https://github.com/vkola-lab/ajpa2021) ResNet-FPN, originally built for whole-slide images (.svs), for standard JPG/PNG input. OpenSlide replaced with PIL, no WSI dependencies, runs on standard hardware including CPU-only.
 
 ```
 Input image (JPG/PNG)
