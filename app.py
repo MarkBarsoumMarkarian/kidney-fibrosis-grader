@@ -4,13 +4,12 @@ import numpy as np
 from PIL import Image
 import torchvision.transforms as transforms
 import sys, os
-import requests
-import base64
 import io
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from utils.model_builder import model as build_model
 import gdown
+import google.generativeai as genai
 
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'global_only.pth')
 if not os.path.exists(MODEL_PATH):
@@ -274,7 +273,6 @@ section.main,
 [data-testid="stTabs"] [role="tab"]:hover {
     color: #a0b8d8 !important; background: #1e2840 !important;
 }
-/* Tab label for Pathology Report — add subtle indicator */
 [data-testid="stTabs"] [role="tab"]:nth-child(2)::after {
     content: ' →';
     color: #2563eb;
@@ -295,7 +293,6 @@ CLASS_COLORS = ["#16a34a", "#d97706", "#ea580c", "#dc2626"]
 CLASS_BG     = ["#0f2318", "#231a08", "#231208", "#230e0e"]
 CLASS_BORDER = ["#1a4a2a", "#4a3510", "#4a2010", "#4a1010"]
 CLASS_SHORT  = ["Minimal (<10%)", "Mild (10–25%)", "Moderate (25–50%)", "Severe (>50%)"]
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 @st.cache_resource
 def load_model():
@@ -320,15 +317,18 @@ def predict(img):
     return probs
 
 def get_unified_report(images, all_probs, all_preds, avg_probs, consensus_pred, consensus_conf):
-    """Llama 4 Scout: sees all images + grades, returns one cohesive report."""
-    groq_key = os.environ.get("GROQ_API_KEY", "")
-    if not groq_key:
+    """Gemini 2.0 Flash: sees all images + grades, returns one cohesive report."""
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    if not gemini_key:
         try:
-            groq_key = st.secrets["GROQ_API_KEY"]
+            gemini_key = st.secrets["GEMINI_API_KEY"]
         except Exception:
             pass
-    if not groq_key:
-        raise ValueError("GROQ_API_KEY not configured.")
+    if not gemini_key:
+        raise ValueError("GEMINI_API_KEY not configured.")
+
+    genai.configure(api_key=gemini_key)
+    model = genai.GenerativeModel("gemini-2.0-flash")
 
     n = len(images)
     per_image_summary = ""
@@ -378,24 +378,19 @@ Explain the findings and treatment direction in simple terms suitable for a pati
 
 Keep each section to 3-5 sentences. Do not number the sections. Do not add any disclaimer or closing statement at the end."""
 
-    # Build message content with all images
-    content_parts = [{"type": "text", "text": prompt}]
+    # Build content parts: text prompt + all images
+    content_parts = [prompt]
     for img in images:
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
-        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-        content_parts.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+        buf.seek(0)
+        content_parts.append({
+            "mime_type": "image/jpeg",
+            "data": buf.read()
+        })
 
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {groq_key}"}
-    payload = {
-        "model": "meta-llama/llama-4-scout-17b-16e-instruct",
-        "messages": [{"role": "user", "content": content_parts}],
-        "max_tokens": 1800,
-        "temperature": 0.3,
-    }
-    response = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=90)
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
+    response = model.generate_content(content_parts)
+    return response.text
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -587,7 +582,7 @@ with tab2:
     <div style="font-family:'Playfair Display',serif; font-size:18px; font-weight:700; color:#e0e6f0;">Pathology Report</div>
     <div style="font-family:'IBM Plex Mono',monospace; font-size:9px; font-weight:500; letter-spacing:0.08em;
                 background:#1a2d1a; color:#6ee7b7; border:1px solid #1a4a35; padding:4px 10px; border-radius:4px;">
-        LLAMA 4 SCOUT &nbsp;·&nbsp; VISION</div>
+        GEMINI 2.0 FLASH &nbsp;·&nbsp; VISION</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -612,17 +607,14 @@ with tab2:
                     st.markdown('<div class="ai-body">', unsafe_allow_html=True)
                     st.markdown(report)
                     st.markdown('</div>', unsafe_allow_html=True)
-                except requests.exceptions.HTTPError as e:
-                    if e.response.status_code == 401:
-                        st.error("Groq API key missing. Add GROQ_API_KEY to Streamlit secrets.")
-                    elif e.response.status_code == 429:
+                except Exception as e:
+                    err = str(e)
+                    if "API_KEY" in err or "api key" in err.lower():
+                        st.error("Gemini API key missing. Add GEMINI_API_KEY to Streamlit secrets.")
+                    elif "429" in err or "quota" in err.lower():
                         st.warning("Rate limit reached. Please wait a moment and retry.")
                     else:
-                        st.error(f"Report unavailable: {str(e)}")
-                except ValueError as e:
-                    st.error(str(e))
-                except Exception as e:
-                    st.error(f"Report unavailable: {str(e)}")
+                        st.error(f"Report unavailable: {err}")
     else:
         st.markdown("""
 <div class="await-wrap">
