@@ -584,14 +584,19 @@ def generate_gradcam_overlay(img: Image.Image, net, class_idx: int) -> Image.Ima
     tensor = transform_gc(img).unsqueeze(0).to(DEVICE)
     tensor.requires_grad_(False)
 
-    # Try to hook layer4 of the global encoder (ResNet convention)
+    # Try to hook layer4 of the global encoder (ResNet convention).
+    # Scope the search to resnet_global so that hooks fire during mode=1
+    # inference (which only runs the global branch).
     target_layer = None
     model_inner = net.module if hasattr(net, 'module') else net
     for name, m in model_inner.named_modules():
-        if 'layer4' in name and isinstance(m, torch.nn.Sequential):
+        if 'resnet_global' in name and name.endswith('layer4') and isinstance(m, torch.nn.Sequential):
             target_layer = m
+            break
     if target_layer is None:
-        target_layer = find_last_conv(model_inner)
+        # Fallback: last Conv2d in the global branch only
+        global_branch = getattr(model_inner, 'resnet_global', model_inner)
+        target_layer = find_last_conv(global_branch)
     if target_layer is None:
         return img  # fallback — no conv found
 
