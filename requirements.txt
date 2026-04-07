@@ -5,7 +5,6 @@ numpy
 Pillow
 opencv-python-headless
 gdown
-google-generativeai
 matplotlib
-opencv-python-headless
-opencv-python
+scikit-learn
+requests
