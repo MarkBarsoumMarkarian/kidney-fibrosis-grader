@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 from PIL import Image
 import torchvision.transforms as transforms
-import sys, os, io, base64, requests, cv2
+import sys, os, io, base64, requests
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
@@ -283,6 +283,61 @@ CLASS_BORDER = ["#1a4a2a", "#4a3510", "#4a2010", "#4a1010"]
 CLASS_SHORT  = ["Minimal (<10%)", "Mild (10–25%)", "Moderate (25–50%)", "Severe (>50%)"]
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
+# ── LAB colour helpers (pure numpy, matching OpenCV uint8 encoding) ──────────
+
+def _rgb2lab_u8(img_np: np.ndarray) -> np.ndarray:
+    """Convert uint8 RGB HxWx3 → uint8 LAB HxWx3 using OpenCV's encoding.
+    L channel: L_real * 255/100  (0–255)
+    A channel: A_real + 128      (0–255)
+    B channel: B_real + 128      (0–255)
+    """
+    rgb = img_np.astype(np.float32) / 255.0
+    # sRGB linearisation
+    lin = np.where(rgb > 0.04045, ((rgb + 0.055) / 1.055) ** 2.4, rgb / 12.92)
+    # Linear RGB → XYZ (D65)
+    M = np.array([[0.4124564, 0.3575761, 0.1804375],
+                  [0.2126729, 0.7151522, 0.0721750],
+                  [0.0193339, 0.1191920, 0.9503041]], dtype=np.float32)
+    xyz = (lin.reshape(-1, 3) @ M.T).reshape(img_np.shape)
+    # Normalise by D65 white point
+    xyz /= np.array([0.95047, 1.00000, 1.08883], dtype=np.float32)
+    # f(t)
+    eps = (6.0 / 29.0) ** 3
+    f = np.where(xyz > eps, xyz ** (1.0 / 3.0), (xyz / (3.0 * (6.0/29.0)**2)) + 4.0/29.0)
+    L = 116.0 * f[..., 1] - 16.0
+    A = 500.0 * (f[..., 0] - f[..., 1])
+    B = 200.0 * (f[..., 1] - f[..., 2])
+    L_enc = np.clip(L * 255.0 / 100.0, 0, 255)
+    A_enc = np.clip(A + 128.0, 0, 255)
+    B_enc = np.clip(B + 128.0, 0, 255)
+    return np.stack([L_enc, A_enc, B_enc], axis=-1).astype(np.uint8)
+
+
+def _lab2rgb_u8(lab_u8: np.ndarray) -> np.ndarray:
+    """Convert uint8 LAB HxWx3 (OpenCV encoding) → uint8 RGB HxWx3."""
+    lab = lab_u8.astype(np.float32)
+    L = lab[..., 0] * 100.0 / 255.0
+    A = lab[..., 1] - 128.0
+    B = lab[..., 2] - 128.0
+    fy = (L + 16.0) / 116.0
+    fx = A / 500.0 + fy
+    fz = fy - B / 200.0
+    eps = 6.0 / 29.0
+    xyz = np.stack([
+        np.where(fx > eps, fx ** 3, 3.0 * eps**2 * (fx - 4.0/29.0)),
+        np.where(fy > eps, fy ** 3, 3.0 * eps**2 * (fy - 4.0/29.0)),
+        np.where(fz > eps, fz ** 3, 3.0 * eps**2 * (fz - 4.0/29.0)),
+    ], axis=-1)
+    xyz *= np.array([0.95047, 1.00000, 1.08883], dtype=np.float32)
+    M_inv = np.array([[ 3.2404542, -1.5371385, -0.4985314],
+                      [-0.9692660,  1.8760108,  0.0415560],
+                      [ 0.0556434, -0.2040259,  1.0572252]], dtype=np.float32)
+    rgb = (xyz.reshape(-1, 3) @ M_inv.T).reshape(xyz.shape)
+    rgb = np.clip(rgb, 0.0, 1.0)
+    rgb = np.where(rgb > 0.0031308, 1.055 * rgb ** (1.0/2.4) - 0.055, 12.92 * rgb)
+    return np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
+
+
 # ── Stain Normalization ───────────────────────────────────────────────────────
 
 def macenko_normalize(img_np: np.ndarray, beta: float = 0.15, alpha: float = 1.0) -> np.ndarray:
@@ -362,7 +417,7 @@ def reinhard_normalize(img_np: np.ndarray) -> np.ndarray:
     target_mean = np.array([74.02, 12.60, -6.48])
     target_std  = np.array([18.77,  8.32,  5.11])
 
-    lab = cv2.cvtColor(img_np, cv2.COLOR_RGB2LAB).astype(np.float32)
+    lab = _rgb2lab_u8(img_np).astype(np.float32)
     for i in range(3):
         src_mean = lab[:, :, i].mean()
         src_std  = lab[:, :, i].std() + 1e-6
@@ -370,7 +425,7 @@ def reinhard_normalize(img_np: np.ndarray) -> np.ndarray:
 
     lab = np.clip(lab, [0, -127, -127], [100, 127, 127]).astype(np.float32)
     lab_u8 = lab.astype(np.uint8)
-    result = cv2.cvtColor(lab_u8, cv2.COLOR_LAB2RGB)
+    result = _lab2rgb_u8(lab_u8)
     return result
 
 
@@ -542,7 +597,11 @@ def generate_gradcam_overlay(img: Image.Image, net, class_idx: int) -> Image.Ima
         gcam.remove()
 
     # Upsample CAM to image size
-    cam_resized = cv2.resize(cam, (img.width, img.height), interpolation=cv2.INTER_CUBIC)
+    cam_resized = np.array(
+        Image.fromarray((cam * 255).clip(0, 255).astype(np.uint8)).resize(
+            (img.width, img.height), Image.BICUBIC
+        )
+    ).astype(np.float32) / 255.0
 
     # Apply jet colormap
     colormap = cm.get_cmap('jet')
