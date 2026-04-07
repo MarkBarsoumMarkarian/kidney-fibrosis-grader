@@ -7,4 +7,5 @@ opencv-python-headless
 gdown
 google-generativeai
 matplotlib
+opencv-python-headless
 opencv-python
