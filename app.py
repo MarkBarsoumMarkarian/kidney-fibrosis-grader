@@ -542,6 +542,12 @@ class GradCAM:
         score = output[0, class_idx]
         score.backward()
 
+        if self.gradients is None or self.activations is None:
+            raise RuntimeError(
+                "Grad-CAM hooks did not fire — the target layer may not be "
+                "part of the computation graph for this input."
+            )
+
         # Global average pooling of gradients
         weights = self.gradients.mean(dim=[2, 3], keepdim=True)  # [1, C, 1, 1]
         cam = (weights * self.activations).sum(dim=1).squeeze(0)  # [H, W]
