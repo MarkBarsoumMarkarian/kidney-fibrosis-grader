@@ -6,7 +6,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-import cv2
+from scipy.ndimage import gaussian_filter
 import numpy as np
 import torch
 import torch.nn as nn
@@ -156,7 +156,7 @@ def one_hot_gaussian_blur(index, classes):
     b, c, _, _ = mask.shape
     for i in range(b):
         for j in range(c):
-            mask[i][j] = cv2.GaussianBlur(mask[i][j], (0, 0), 8)
+            mask[i][j] = gaussian_filter(mask[i][j], sigma=8)
 
     return mask
 
