@@ -234,7 +234,7 @@ class fpn(nn.Module):
         self._up_kwargs = {'mode': 'bilinear'}
         # Res net
         self.resnet_global = resnet50(True)
-        self.resnet_local = resnet50(True)
+        self.resnet_local = resnet50(False)
 
         # fpn module
         self.fpn_global = fpn_module_global(numClass)
