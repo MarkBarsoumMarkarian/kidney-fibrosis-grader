@@ -14,6 +14,10 @@ from utils.model_builder import model as build_model
 import gdown
 
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'global_only.pth')
+if not os.path.exists(MODEL_PATH):
+    print('Downloading model weights...')
+    gdown.download('https://drive.google.com/uc?id=1KvJQ0YKL-I96UJ5zUGLR_Qpd4R0ach5t', MODEL_PATH, quiet=False)
+    print('Done.')
 
 st.set_page_config(
     page_title="Kidney Fibrosis Grader",
@@ -626,16 +630,6 @@ def generate_gradcam_overlay(img: Image.Image, net, class_idx: int) -> Image.Ima
 
 @st.cache_resource
 def load_model():
-    if not os.path.exists(MODEL_PATH):
-        try:
-            print('Downloading model weights...')
-            gdown.download('https://drive.google.com/uc?id=1KvJQ0YKL-I96UJ5zUGLR_Qpd4R0ach5t', MODEL_PATH, quiet=False)
-            print('Done.')
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to download model weights: {e}\n"
-                "The Google Drive link may have exceeded its quota. Please try again later."
-            ) from e
     net, _ = build_model(N_CLASS, mode=MODE, evaluation=True, path_g=MODEL_PATH)
     net.eval()
     return net
