@@ -290,62 +290,127 @@ def predict(img):
 
 
 # ── Grad-CAM ───────────────────────────────────────────────────────────────────
+class GradCAM:
+    """
+    Hooks into the last convolutional layer of the global encoder,
+    computes class-discriminative activation maps via gradient weighting.
+    Compatible with ResNet backbones as used in the vkola model.
+    """
+    def __init__(self, model, target_layer):
+        self.model = model
+        self.activations = None
+        self.gradients = None
+        self._fwd_hook = target_layer.register_forward_hook(self._save_activation)
+        self._bwd_hook = target_layer.register_full_backward_hook(self._save_gradient)
+
+    def _save_activation(self, module, inp, out):
+        self.activations = out.detach()
+
+    def _save_gradient(self, module, grad_in, grad_out):
+        self.gradients = grad_out[0].detach()
+
+    def remove(self):
+        self._fwd_hook.remove()
+        self._bwd_hook.remove()
+
+    def generate(self, input_tensor, class_idx):
+        self.model.zero_grad()
+        output, _ = self.model.forward(
+            input_tensor,
+            torch.zeros(1, 3, IMG_SIZE, IMG_SIZE).to(DEVICE),
+            [(0, 0)],
+            (1.0, 1.0),
+            mode=1
+        )
+        probs = torch.softmax(output, dim=1)[0].detach().cpu().numpy()
+        score = output[0, class_idx]
+        score.backward()
+
+        if self.gradients is None or self.activations is None:
+            raise RuntimeError(
+                "Grad-CAM hooks did not fire — the target layer may not be "
+                "part of the computation graph for this input."
+            )
+
+        weights = self.gradients.mean(dim=[2, 3], keepdim=True)
+        cam = (weights * self.activations).sum(dim=1).squeeze(0)
+        cam = F.relu(cam)
+
+        cam_min, cam_max = cam.min(), cam.max()
+        if cam_max > cam_min:
+            cam = (cam - cam_min) / (cam_max - cam_min)
+        else:
+            cam = torch.zeros_like(cam)
+
+        return cam.cpu().numpy(), probs
+
+
+def find_last_conv(module):
+    """Recursively find the last Conv2d in a module."""
+    last = None
+    for _, m in module.named_modules():
+        if isinstance(m, torch.nn.Conv2d):
+            last = m
+    return last
+
+
 def compute_gradcam(img: Image.Image, target_class: int = None):
     """
     Grad-CAM on the global ResNet branch (layer4).
     Returns (heatmap_rgb, overlay_rgb, predicted_class, probs, cam_raw).
     """
     net = load_model()
+    model_inner = net.module if hasattr(net, 'module') else net
+
     tensor = transform(img).unsqueeze(0).to(DEVICE)
-    gradients  = []
-    activations = []
+    tensor.requires_grad_(False)
 
-    def _fwd_hook(module, inp, out):
-        activations.append(out.detach())
-
-    def _bwd_hook(module, grad_in, grad_out):
-        gradients.append(grad_out[0].detach())
-
-    target_layer = net.module.resnet_global.layer4
-    fwd_h = target_layer.register_forward_hook(_fwd_hook)
-    bwd_h = target_layer.register_full_backward_hook(_bwd_hook)
-
-    dummy_patches   = torch.zeros(1, 3, IMG_SIZE, IMG_SIZE).to(DEVICE)
-    dummy_top_lefts = [(0, 0)]
-    dummy_ratio     = (1.0, 1.0)
-    output, _ = net.module.forward(tensor, dummy_patches, dummy_top_lefts, dummy_ratio, mode=1)
-    probs = torch.softmax(output, dim=1)[0].detach().cpu().numpy()
-
+    # First pass (no grad) to get class probabilities and resolve target_class.
+    with torch.no_grad():
+        out_ng, _ = model_inner.forward(
+            tensor,
+            torch.zeros(1, 3, IMG_SIZE, IMG_SIZE).to(DEVICE),
+            [(0, 0)],
+            (1.0, 1.0),
+            mode=1
+        )
+    probs = torch.softmax(out_ng, dim=1)[0].cpu().numpy()
     if target_class is None:
         target_class = int(np.argmax(probs))
 
-    net.zero_grad()
-    score = output[0, target_class]
-    score.backward()
+    # Scope the hook to resnet_global.layer4 so it fires during mode=1 inference.
+    target_layer = None
+    for name, m in model_inner.named_modules():
+        if 'resnet_global' in name and name.endswith('layer4') and isinstance(m, torch.nn.Sequential):
+            target_layer = m
+            break
+    if target_layer is None:
+        global_branch = getattr(model_inner, 'resnet_global', model_inner)
+        target_layer = find_last_conv(global_branch)
+    if target_layer is None:
+        raise RuntimeError("No suitable target layer found for Grad-CAM")
 
-    fwd_h.remove()
-    bwd_h.remove()
-
-    grads   = gradients[0]
-    acts    = activations[0]
-    weights = grads.mean(dim=(2, 3), keepdim=True)
-    cam = F.relu((weights * acts).sum(dim=1, keepdim=True))
+    gcam = GradCAM(model_inner, target_layer)
+    try:
+        cam_np, _ = gcam.generate(tensor, target_class)
+    finally:
+        gcam.remove()
 
     orig_w, orig_h = img.size
-    cam_up = F.interpolate(cam, size=(orig_h, orig_w), mode="bilinear", align_corners=False)
-    cam_np = cam_up[0, 0].cpu().numpy()
+    cam_resized = np.array(
+        Image.fromarray((cam_np * 255).clip(0, 255).astype(np.uint8)).resize(
+            (orig_w, orig_h), Image.BICUBIC
+        )
+    ).astype(np.float32) / 255.0
 
-    vmin, vmax = cam_np.min(), cam_np.max()
-    cam_np = (cam_np - vmin) / (vmax - vmin + 1e-8)
-
-    heatmap_u8    = (cam_np * 255).astype(np.uint8)
+    heatmap_u8    = (cam_resized * 255).astype(np.uint8)
     heatmap_color = cv2.applyColorMap(heatmap_u8, cv2.COLORMAP_JET)
     heatmap_rgb   = cv2.cvtColor(heatmap_color, cv2.COLOR_BGR2RGB)
 
-    orig_np = np.array(img.resize((orig_w, orig_h)))
+    orig_np = np.array(img.convert("RGB"))
     overlay = cv2.addWeighted(orig_np, 0.55, heatmap_rgb, 0.45, 0)
 
-    return heatmap_rgb, overlay, target_class, probs, cam_np
+    return heatmap_rgb, overlay, target_class, probs, cam_resized
 
 
 # ── Stain Normalisation ────────────────────────────────────────────────────────
