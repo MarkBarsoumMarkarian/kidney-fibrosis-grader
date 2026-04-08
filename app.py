@@ -615,7 +615,7 @@ def generate_gradcam_overlay(img: Image.Image, net, class_idx: int) -> Image.Ima
     ).astype(np.float32) / 255.0
 
     # Apply jet colormap
-    colormap = cm.get_cmap('jet')
+    colormap = matplotlib.colormaps['jet']
     heatmap = colormap(cam_resized)[:, :, :3]  # RGB, drop alpha
     heatmap_u8 = (heatmap * 255).astype(np.uint8)
 
@@ -802,13 +802,13 @@ with tab1:
 
             st.markdown('<div class="sec-label" style="margin-top:14px;">Input Preview</div>', unsafe_allow_html=True)
             if len(norm_imgs) == 1:
-                st.image(norm_imgs[0], use_column_width=True,
+                st.image(norm_imgs[0], use_container_width=True,
                          caption="Normalised" if norm_key else "Original")
             else:
                 thumb_cols = st.columns(len(norm_imgs))
                 for i, (tc, im) in enumerate(zip(thumb_cols, norm_imgs)):
                     with tc:
-                        st.image(im, use_column_width=True, caption=f"Img {i+1}")
+                        st.image(im, use_container_width=True, caption=f"Img {i+1}")
         else:
             st.session_state.imgs = None
             st.session_state.norm_imgs = None
@@ -1017,17 +1017,17 @@ Activation intensity
             if len(overlays) == 1:
                 oc1, oc2 = st.columns(2)
                 with oc1:
-                    st.image(norm_imgs[0], use_column_width=True, caption="Original (normalised)")
+                    st.image(norm_imgs[0], use_container_width=True, caption="Original (normalised)")
                 with oc2:
-                    st.image(overlays[0], use_column_width=True,
+                    st.image(overlays[0], use_container_width=True,
                              caption=f"Grad-CAM → {CLASS_NAMES[target_class_idx]}")
             else:
                 for i, (orig, ov) in enumerate(zip(norm_imgs, overlays)):
                     oc1, oc2 = st.columns(2)
                     with oc1:
-                        st.image(orig, use_column_width=True, caption=f"Image {i+1} — Original")
+                        st.image(orig, use_container_width=True, caption=f"Image {i+1} — Original")
                     with oc2:
-                        st.image(ov, use_column_width=True,
+                        st.image(ov, use_container_width=True,
                                  caption=f"Image {i+1} — Grad-CAM ({CLASS_NAMES[target_class_idx]})")
 
 
@@ -1089,7 +1089,7 @@ with tab3:
             pred_conf = probs[pred_idx] * 100
             color     = CLASS_COLORS[pred_idx]
             with col:
-                st.image(nim, use_column_width=True, caption=label)
+                st.image(nim, use_container_width=True, caption=label)
                 st.markdown(f"""
 <div style="background:#1a2435; border:1px solid #2a3a55; border-radius:6px; padding:10px 12px; margin-top:2px;">
     <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#4a5470; margin-bottom:4px;">MODEL OUTPUT</div>
@@ -1156,7 +1156,7 @@ with tab4:
         with rcol1:
             for i, im in enumerate(st.session_state.norm_imgs):
                 caption = f"Image {i+1} — {CLASS_NAMES[all_preds[i]]}" if len(st.session_state.norm_imgs) > 1 else "Analyzed biopsy image"
-                st.image(im, use_column_width=True, caption=caption)
+                st.image(im, use_container_width=True, caption=caption)
 
         with rcol2:
             with st.spinner("Generating pathology report..."):
