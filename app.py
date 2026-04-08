@@ -363,7 +363,6 @@ def compute_gradcam(img: Image.Image, target_class: int = None):
     model_inner = net.module if hasattr(net, 'module') else net
 
     tensor = transform(img).unsqueeze(0).to(DEVICE)
-    tensor.requires_grad_(False)
 
     # First pass (no grad) to get class probabilities and resolve target_class.
     with torch.no_grad():
@@ -397,10 +396,9 @@ def compute_gradcam(img: Image.Image, target_class: int = None):
         gcam.remove()
 
     orig_w, orig_h = img.size
+    cam_u8 = (cam_np * 255).clip(0, 255).astype(np.uint8)
     cam_resized = np.array(
-        Image.fromarray((cam_np * 255).clip(0, 255).astype(np.uint8)).resize(
-            (orig_w, orig_h), Image.BICUBIC
-        )
+        Image.fromarray(cam_u8).resize((orig_w, orig_h), Image.BICUBIC)
     ).astype(np.float32) / 255.0
 
     heatmap_u8    = (cam_resized * 255).astype(np.uint8)
