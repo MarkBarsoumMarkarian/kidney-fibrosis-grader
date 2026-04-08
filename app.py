@@ -5,6 +5,7 @@ import numpy as np
 from PIL import Image
 import torchvision.transforms as transforms
 import sys, os, io, base64, requests
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
