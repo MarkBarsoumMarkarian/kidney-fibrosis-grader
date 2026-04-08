@@ -393,10 +393,10 @@ def macenko_normalise(source: Image.Image, reference: Image.Image) -> Image.Imag
 
 
 def reinhard_normalise(source: Image.Image, reference: Image.Image) -> Image.Image:
-    s  = np.array(source.convert("RGB")).astype(np.float32)
-    r  = np.array(reference.convert("RGB")).astype(np.float32)
-    sl = cv2.cvtColor(s, cv2.COLOR_RGB2LAB)
-    rl = cv2.cvtColor(r, cv2.COLOR_RGB2LAB)
+    s  = np.array(source.convert("RGB"))    # uint8 — cvtColor needs [0,255] uint8 for correct LAB
+    r  = np.array(reference.convert("RGB"))
+    sl = cv2.cvtColor(s, cv2.COLOR_RGB2LAB).astype(np.float32)
+    rl = cv2.cvtColor(r, cv2.COLOR_RGB2LAB).astype(np.float32)
     out = sl.copy()
     for ch in range(3):
         sm, ss = sl[:, :, ch].mean(), sl[:, :, ch].std() + 1e-6
@@ -406,21 +406,25 @@ def reinhard_normalise(source: Image.Image, reference: Image.Image) -> Image.Ima
 
 
 def vahadane_normalise(source: Image.Image, reference: Image.Image) -> Image.Image:
-    s  = np.array(source.convert("RGB")).astype(np.float32)
-    r  = np.array(reference.convert("RGB")).astype(np.float32)
-    sl = cv2.cvtColor(s, cv2.COLOR_RGB2LAB)
-    rl = cv2.cvtColor(r, cv2.COLOR_RGB2LAB)
+    """Full LAB-space histogram matching — transfers the complete colour distribution."""
+    s  = np.array(source.convert("RGB"))    # uint8 — cvtColor needs [0,255] uint8 for correct LAB
+    r  = np.array(reference.convert("RGB"))
+    sl = cv2.cvtColor(s, cv2.COLOR_RGB2LAB).astype(np.float32)
+    rl = cv2.cvtColor(r, cv2.COLOR_RGB2LAB).astype(np.float32)
     out = sl.copy()
     for ch in range(3):
-        sm, ss = sl[:, :, ch].mean(), sl[:, :, ch].std() + 1e-6
-        rm, rs = rl[:, :, ch].mean(), rl[:, :, ch].std() + 1e-6
-        out[:, :, ch] = (sl[:, :, ch] - sm) * (rs / ss) + rm
+        src_sorted = np.sort(sl[:, :, ch].flatten())
+        ref_sorted = np.sort(rl[:, :, ch].flatten())
+        # Map each source pixel to the matching quantile in the reference distribution
+        out[:, :, ch] = np.interp(
+            sl[:, :, ch].flatten(), src_sorted, ref_sorted
+        ).reshape(sl[:, :, ch].shape)
     return Image.fromarray(cv2.cvtColor(np.clip(out, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB))
 
 
 def compute_stain_metrics(img: Image.Image):
-    np_img = np.array(img.convert("RGB")).astype(np.float32)
-    lab    = cv2.cvtColor(np_img, cv2.COLOR_RGB2LAB)
+    np_img = np.array(img.convert("RGB"))   # uint8 — cvtColor needs [0,255] uint8 for correct LAB
+    lab    = cv2.cvtColor(np_img, cv2.COLOR_RGB2LAB).astype(np.float32)
     return {
         "L* mean":  f"{lab[:,:,0].mean():.1f}",
         "A* mean":  f"{lab[:,:,1].mean():.1f}",
@@ -829,16 +833,33 @@ with tab3:
         with gcam_alpha_col:
             overlay_alpha = st.slider("Overlay opacity", 0.1, 0.9, 0.45, 0.05, key="gcam_alpha")
 
-        with st.spinner("Computing Grad-CAM..."):
-            try:
-                heatmap_rgb, overlay_np, pred_class, probs, cam_raw = compute_gradcam(
-                    selected_img, target_class=target_class_idx
-                )
-                orig_np    = np.array(selected_img)
-                overlay_np = cv2.addWeighted(orig_np, 1 - overlay_alpha, heatmap_rgb, overlay_alpha, 0)
-            except Exception as e:
-                st.error(f"Grad-CAM error: {str(e)}")
-                st.stop()
+        # Only recompute when the image or target class changes; the slider just reblends.
+        gcam_needs_recompute = (
+            st.session_state.get("gcam_last_imgs_id") != id(gcam_imgs)
+            or st.session_state.get("gcam_last_img_idx") != img_idx
+            or st.session_state.get("gcam_last_class") != target_class_idx
+        )
+
+        if gcam_needs_recompute:
+            with st.spinner("Computing Grad-CAM..."):
+                try:
+                    heatmap_rgb, _, pred_class, probs, cam_raw = compute_gradcam(
+                        selected_img, target_class=target_class_idx
+                    )
+                    st.session_state["gcam_last_imgs_id"] = id(gcam_imgs)
+                    st.session_state["gcam_last_img_idx"] = img_idx
+                    st.session_state["gcam_last_class"]   = target_class_idx
+                    st.session_state["gcam_cache"] = (heatmap_rgb, pred_class, probs, cam_raw)
+                except Exception as e:
+                    st.error(f"Grad-CAM error: {str(e)}")
+                    st.stop()
+
+        if "gcam_cache" not in st.session_state:
+            st.stop()
+
+        heatmap_rgb, pred_class, probs, cam_raw = st.session_state["gcam_cache"]
+        orig_np    = np.array(selected_img)
+        overlay_np = cv2.addWeighted(orig_np, 1 - overlay_alpha, heatmap_rgb, overlay_alpha, 0)
 
         g1, g2, g3 = st.columns(3, gap="medium")
         with g1:
