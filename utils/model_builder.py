@@ -179,7 +179,7 @@ def model(n_class, mode=1, evaluation=False, path_g=None, path_g2l=None, path_l2
 
     if (mode == 2 and not evaluation) or (mode == 1 and evaluation):
         # load fixed basic global branch
-        partial = torch.load(path_g, map_location=torch.device('cpu'))
+        partial = torch.load(path_g, map_location=torch.device('cpu'), weights_only=False)
         state = model.state_dict()
         # 1. filter out unnecessary keys
         pretrained_dict = {k: v for k, v in partial.items() if k in state and "local" not in k}
@@ -189,7 +189,7 @@ def model(n_class, mode=1, evaluation=False, path_g=None, path_g2l=None, path_l2
         model.load_state_dict(state)
 
     if (mode == 3 and not evaluation) or (mode == 2 and evaluation):
-        partial = torch.load(path_g2l, map_location=torch.device('cpu'))
+        partial = torch.load(path_g2l, map_location=torch.device('cpu'), weights_only=False)
         state = model.state_dict()
         # 1. filter out unnecessary keys
         pretrained_dict = {k: v for k, v in partial.items() if k in state}# and "global" not in k}
@@ -204,7 +204,7 @@ def model(n_class, mode=1, evaluation=False, path_g=None, path_g2l=None, path_l2
         global_fixed = fpn(n_class)
         global_fixed = nn.DataParallel(global_fixed)
         global_fixed = global_fixed.to("cpu")
-        partial = torch.load(path_g, map_location=torch.device('cpu'))
+        partial = torch.load(path_g, map_location=torch.device('cpu'), weights_only=False)
         state = global_fixed.state_dict()
         # 1. filter out unnecessary keys
         pretrained_dict = {k: v for k, v in partial.items() if k in state and "local" not in k}
@@ -215,7 +215,7 @@ def model(n_class, mode=1, evaluation=False, path_g=None, path_g2l=None, path_l2
         global_fixed.eval()
 
     if mode == 3 and evaluation:
-        partial = torch.load(path_l2g, map_location=torch.device('cpu'))
+        partial = torch.load(path_l2g, map_location=torch.device('cpu'), weights_only=False)
         state = model.state_dict()
         # 1. filter out unnecessary keys
         pretrained_dict = {k: v for k, v in partial.items() if k in state}# and "global" not in k}
