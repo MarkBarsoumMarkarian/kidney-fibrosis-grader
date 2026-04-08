@@ -3,8 +3,5 @@ torchvision
 streamlit
 numpy
 Pillow
-scipy
+opencv-python-headless
 gdown
-matplotlib
-scikit-learn
-requests
