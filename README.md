@@ -15,6 +15,7 @@ Interstitial fibrosis and tubular atrophy (IFTA) grading is a critical step in k
 | Architecture | ResNet-50 Feature Pyramid Network |
 | Task | 4-class fibrosis grading: Grade 0 / 1 / 2 / 3 |
 | Input | Trichrome-stained kidney biopsy image (JPG or PNG) |
+| Stain normalisation | Macenko · Reinhard · Vahadane (built-in, no extra dependencies) |
 | Report generation | Groq API with Llama 4 Scout |
 | Interface | Streamlit web app |
 
@@ -32,6 +33,7 @@ Adapts the [vkola-lab/ajpa2021](https://github.com/vkola-lab/ajpa2021) ResNet-FP
 
 ```
 Input image (JPG/PNG)
+    -> [Optional] Stain normalisation (Macenko / Reinhard / Vahadane)
     -> PIL preprocessing + transforms
     -> ResNet-50 backbone
     -> Feature Pyramid Network
@@ -41,6 +43,20 @@ Input image (JPG/PNG)
     -> Groq / Llama 4 Scout
     -> Structured pathology report
 ```
+
+---
+
+## Stain Normalisation
+
+Trichrome staining intensity varies across laboratories, which can shift colour distributions at the same fibrosis grade and cause the model to mis-predict. The built-in **Stain Normalisation** tab lets you transfer a reference lab's stain profile onto your source image before running inference, reducing cross-site domain shift.
+
+Three algorithms are available, all implemented from scratch with NumPy/OpenCV (no additional dependencies):
+
+| Method | Approach | Reference |
+|---|---|---|
+| **Macenko** | SVD-based stain-vector separation in optical-density space — most accurate for trichrome | Macenko et al., *A method for normalizing histology slides for quantitative analysis*, ISBI 2009 · [doi:10.1109/ISBI.2009.5193250](https://doi.org/10.1109/ISBI.2009.5193250) |
+| **Reinhard** | Per-channel mean/std transfer in LAB colour space — fast and simple | Reinhard et al., *Color transfer between images*, IEEE CG&A 2001 · [doi:10.1109/38.946629](https://doi.org/10.1109/38.946629) |
+| **Vahadane** | Full LAB histogram matching via quantile interpolation — robust to outliers | Vahadane et al., *Structure-Preserving Color Normalization and Sparse Stain Separation for Histological Images*, IEEE TMI 2016 · [doi:10.1109/TMI.2016.2529665](https://doi.org/10.1109/TMI.2016.2529665) |
 
 ---
 
@@ -84,6 +100,6 @@ A `.devcontainer` config is included for VS Code devcontainer or GitHub Codespac
 
 ## Stack
 
-Python · PyTorch · ResNet-FPN · Streamlit · Groq API · Llama 4 Scout · PIL
+Python · PyTorch · ResNet-FPN · Streamlit · Groq API · Llama 4 Scout · PIL · NumPy · OpenCV
 
 **License:** MIT
