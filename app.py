@@ -886,34 +886,26 @@ with tab3:
             )
         selected_img = gcam_imgs[img_idx]
 
-        gcam_ctrl, gcam_alpha_col = st.columns([2, 1])
-        with gcam_ctrl:
-            target_class_name = st.selectbox(
-                "Explain prediction for class", CLASS_NAMES,
-                index=0, key="gcam_class_sel",
-                help="Which fibrosis grade should the heatmap explain?"
-            )
-            target_class_idx = CLASS_NAMES.index(target_class_name)
+        gcam_alpha_col, _ = st.columns([1, 2])
         with gcam_alpha_col:
             overlay_alpha = st.slider("Overlay opacity", 0.1, 0.9, 0.45, 0.05, key="gcam_alpha")
 
-        # Only recompute when the image or target class changes; the slider just reblends.
+        # Only recompute when the image changes; the slider just reblends.
         # Use a small-thumbnail MD5 as a stable, content-based image fingerprint.
         _thumb = selected_img.resize((16, 16)).tobytes()
         gcam_img_key = hashlib.md5(_thumb).hexdigest()
         gcam_needs_recompute = (
             st.session_state.get("gcam_last_img_key") != gcam_img_key
-            or st.session_state.get("gcam_last_class") != target_class_idx
         )
 
         if gcam_needs_recompute:
             with st.spinner("Computing Grad-CAM..."):
                 try:
+                    # target_class=None → automatically selects the predicted class
                     heatmap_rgb, _, pred_class, probs, cam_raw = compute_gradcam(
-                        selected_img, target_class=target_class_idx
+                        selected_img, target_class=None
                     )
                     st.session_state["gcam_last_img_key"] = gcam_img_key
-                    st.session_state["gcam_last_class"]   = target_class_idx
                     st.session_state["gcam_cache"] = (heatmap_rgb, pred_class, probs, cam_raw)
                 except Exception as e:
                     st.error(f"Grad-CAM error: {str(e)}")
@@ -954,8 +946,8 @@ with tab3:
             st.markdown(stat_card("Predicted Class", CLASS_NAMES[pred_class],
                 f"{probs[pred_class]*100:.1f}% confidence", CLASS_COLORS[pred_class]), unsafe_allow_html=True)
         with s2:
-            st.markdown(stat_card("Explained Class", CLASS_NAMES[target_class_idx],
-                f"{probs[target_class_idx]*100:.1f}% probability", CLASS_COLORS[target_class_idx]), unsafe_allow_html=True)
+            st.markdown(stat_card("Explained Class", CLASS_NAMES[pred_class],
+                f"{probs[pred_class]*100:.1f}% probability", CLASS_COLORS[pred_class]), unsafe_allow_html=True)
         with s3:
             st.markdown(stat_card("Peak Activation", f"{cam_raw.max()*100:.0f}%",
                 "of normalised range", "#c084fc"), unsafe_allow_html=True)
