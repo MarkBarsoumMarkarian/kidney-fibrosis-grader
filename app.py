@@ -640,199 +640,274 @@ def _latin1(text: str) -> str:
 
 def generate_pdf_report(images, overlay_images, all_probs, all_preds,
                         avg_probs, consensus_pred, consensus_conf, report_text):
-    """Build an A4 PDF containing the grade summary, biopsy + Grad-CAM images, and the LLM report."""
+    """Build a clean, professional A4 PDF (1-2 pages) with grade summary, images, and LLM report."""
     from fpdf import FPDF
     from datetime import date as _date
+    import html as _html
+
+    # ── Colours ───────────────────────────────────────────────────────────────
+    C_BLACK   = (30,  30,  30)
+    C_DARK    = (55,  65,  81)
+    C_MID     = (107, 114, 128)
+    C_LIGHT   = (156, 163, 175)
+    C_BORDER  = (209, 213, 219)
+    C_ACCENT  = (37,  99,  235)   # blue
+    C_BG_BOX  = (239, 246, 255)   # light blue tint
+    GRADE_COLOURS = [
+        (22, 163, 74),    # Minimal – green
+        (202, 138, 4),    # Mild    – amber
+        (234, 88,  12),   # Moderate – orange
+        (220, 38,  38),   # Severe  – red
+    ]
+
+    def set_color(rgb, fill=False, draw=False, text=False):
+        if fill: pdf.set_fill_color(*rgb)
+        if draw: pdf.set_draw_color(*rgb)
+        if text: pdf.set_text_color(*rgb)
 
     pdf = FPDF(orientation="P", unit="mm", format="A4")
-    pdf.set_auto_page_break(auto=True, margin=18)
-    pdf.set_margins(left=15, top=15, right=15)
-    W = pdf.w - pdf.l_margin - pdf.r_margin   # usable width ≈ 180 mm
+    pdf.set_auto_page_break(auto=True, margin=16)
+    pdf.set_margins(left=16, top=14, right=16)
+    W = pdf.w - pdf.l_margin - pdf.r_margin   # usable width ≈ 178 mm
 
-    # ── Page 1: Summary ──────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
+    # PAGE 1 – Summary + images
+    # ══════════════════════════════════════════════════════════════════════════
     pdf.add_page()
 
-    # Title banner
-    pdf.set_fill_color(17, 24, 39)
-    pdf.rect(pdf.l_margin, pdf.t_margin, W, 20, style="F")
-    pdf.set_font("Helvetica", style="B", size=14)
-    pdf.set_text_color(224, 230, 240)
-    pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 3)
-    pdf.cell(W - 8, 8, _latin1("Kidney Fibrosis Grader \u2014 Pathology Report"), ln=0)
+    # ── Header bar ────────────────────────────────────────────────────────────
+    set_color(C_ACCENT, fill=True)
+    pdf.rect(pdf.l_margin, pdf.t_margin, W, 13, style="F")
+    pdf.set_font("Helvetica", style="B", size=12)
+    set_color((255, 255, 255), text=True)
+    pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 2)
+    pdf.cell(W // 2, 6, "Kidney Fibrosis Grader", ln=0)
     pdf.set_font("Helvetica", size=8)
-    pdf.set_text_color(100, 130, 180)
-    pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 12)
-    pdf.cell(W - 8, 6,
-             _latin1(f"Generated {_date.today().strftime('%B %d, %Y')}  \u00b7  "
-                     "ResNet-FPN  \u00b7  Llama 4 Scout Vision"), ln=0)
-    pdf.ln(26)
+    set_color((199, 218, 255), text=True)
+    pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 8)
+    pdf.cell(W - 8, 5,
+             _latin1(f"Pathology Report  --  {_date.today().strftime('%B %d, %Y')}  "
+                     "  |  ResNet-FPN  |  Llama 4 Scout Vision"), ln=0)
+    pdf.ln(19)
 
-    # Consensus grade box
-    import html as _html
+    # ── Two-column layout: grade box (left) + probability bars (right) ────────
+    col_gap = 6
+    col_l_w = W * 0.42
+    col_r_w = W - col_l_w - col_gap
+
     grade_name  = _latin1(CLASS_NAMES[consensus_pred])
     grade_range = _latin1(_html.unescape(CLASS_RANGE[consensus_pred]))
+    gc = GRADE_COLOURS[consensus_pred]
+
+    # Left: Consensus grade box
     box_y = pdf.get_y()
-    pdf.set_fill_color(22, 35, 58)
-    pdf.set_draw_color(40, 80, 140)
-    pdf.set_line_width(0.5)
-    pdf.rect(pdf.l_margin, box_y, W, 26, style="FD")
+    box_h = 30
+    set_color(C_BG_BOX, fill=True)
+    set_color(C_BORDER, draw=True)
+    pdf.set_line_width(0.3)
+    pdf.rect(pdf.l_margin, box_y, col_l_w, box_h, style="FD")
+    # colour accent strip on left edge
+    set_color(gc, fill=True)
+    pdf.rect(pdf.l_margin, box_y, 3, box_h, style="F")
     pdf.set_font("Helvetica", size=7)
-    pdf.set_text_color(100, 140, 200)
+    set_color(C_MID, text=True)
     pdf.set_xy(pdf.l_margin + 5, box_y + 3)
-    pdf.cell(W, 5, "CONSENSUS GRADE", ln=1)
-    pdf.set_font("Helvetica", style="B", size=15)
-    pdf.set_text_color(224, 230, 240)
+    pdf.cell(col_l_w, 4, "CONSENSUS GRADE", ln=1)
+    pdf.set_font("Helvetica", style="B", size=13)
+    set_color(gc, text=True)
     pdf.set_x(pdf.l_margin + 5)
-    pdf.cell(W, 8, f"{grade_name}  ({grade_range})", ln=1)
-    pdf.set_font("Helvetica", size=9)
-    pdf.set_text_color(150, 180, 220)
+    pdf.cell(col_l_w, 8, grade_name, ln=1)
+    pdf.set_font("Helvetica", size=8)
+    set_color(C_DARK, text=True)
     pdf.set_x(pdf.l_margin + 5)
-    pdf.cell(W, 6, f"Model confidence: {consensus_conf:.1f}%", ln=1)
-    pdf.ln(6)
+    pdf.cell(col_l_w, 5, grade_range, ln=1)
+    pdf.set_font("Helvetica", size=7)
+    set_color(C_MID, text=True)
+    pdf.set_x(pdf.l_margin + 5)
+    pdf.cell(col_l_w, 4, f"Confidence: {consensus_conf:.1f}%", ln=1)
 
-    # Probability breakdown
-    pdf.set_font("Helvetica", style="B", size=9)
-    pdf.set_text_color(140, 170, 220)
-    pdf.set_x(pdf.l_margin)
-    pdf.cell(W, 6, "PROBABILITY BREAKDOWN", ln=1)
+    # Right: Probability bars
+    rx = pdf.l_margin + col_l_w + col_gap
+    ry = box_y
+    pdf.set_font("Helvetica", style="B", size=7)
+    set_color(C_MID, text=True)
+    pdf.set_xy(rx, ry)
+    pdf.cell(col_r_w, 4, "PROBABILITY BREAKDOWN", ln=0)
+    ry += 5
+    bar_h = 5
     for i, short in enumerate(CLASS_SHORT):
-        pct = avg_probs[i] * 100
-        bar_w = W * pct / 100
-        bar_y = pdf.get_y()
-        pdf.set_fill_color(30, 45, 75)
-        pdf.rect(pdf.l_margin, bar_y, W, 6, style="F")
-        # coloured fill
-        r, g, b = (22, 163, 74) if i == 0 else (217, 119, 6) if i == 1 else (234, 88, 12) if i == 2 else (220, 38, 38)
-        pdf.set_fill_color(r, g, b)
-        if bar_w > 0:
-            pdf.rect(pdf.l_margin, bar_y, bar_w, 6, style="F")
-        pdf.set_font("Helvetica", size=8)
-        pdf.set_text_color(220, 230, 245)
-        pdf.set_xy(pdf.l_margin + 2, bar_y)
-        pdf.cell(W - 4, 6, _latin1(f"{short}: {pct:.1f}%"), ln=1)
-    pdf.ln(5)
+        pct   = avg_probs[i] * 100
+        bar_w = col_r_w * pct / 100
+        # background
+        set_color((229, 231, 235), fill=True)
+        pdf.rect(rx, ry, col_r_w, bar_h, style="F")
+        # fill
+        set_color(GRADE_COLOURS[i], fill=True)
+        if bar_w > 0.5:
+            pdf.rect(rx, ry, bar_w, bar_h, style="F")
+        # label
+        pdf.set_font("Helvetica", size=7)
+        set_color(C_BLACK, text=True)
+        pdf.set_xy(rx + 1, ry)
+        pdf.cell(col_r_w - 2, bar_h, _latin1(f"{short}  {pct:.1f}%"), ln=0, align="L")
+        ry += bar_h + 1
 
-    # Per-image breakdown (multi-image)
+    pdf.set_xy(pdf.l_margin, box_y + box_h + 4)
+
+    # Per-image row (compact, only when >1 image)
     n = len(images)
     if n > 1:
-        pdf.set_font("Helvetica", style="B", size=9)
-        pdf.set_text_color(140, 170, 220)
+        pdf.set_font("Helvetica", style="B", size=7)
+        set_color(C_MID, text=True)
         pdf.set_x(pdf.l_margin)
-        pdf.cell(W, 6, f"PER-IMAGE GRADES  ({n} images)", ln=1)
+        pdf.cell(W, 4, f"PER-IMAGE GRADES ({n} images)", ln=1)
+        col_w = (W - (n - 1) * 2) / n
+        row_y = pdf.get_y()
         for i in range(n):
-            p = all_preds[i]
-            label = _latin1(f"  Image {i+1}: {CLASS_NAMES[p]}  ({all_probs[i][p]*100:.1f}% confidence)")
-            pdf.set_font("Helvetica", size=9)
-            pdf.set_text_color(200, 215, 235)
-            pdf.set_x(pdf.l_margin)
-            pdf.cell(W, 6, label, ln=1)
-        pdf.ln(3)
+            p  = all_preds[i]
+            cx = pdf.l_margin + i * (col_w + 2)
+            set_color((248, 250, 252), fill=True)
+            set_color(C_BORDER, draw=True)
+            pdf.set_line_width(0.2)
+            pdf.rect(cx, row_y, col_w, 10, style="FD")
+            set_color(GRADE_COLOURS[p], fill=True)
+            pdf.rect(cx, row_y, col_w, 2, style="F")
+            pdf.set_font("Helvetica", style="B", size=7)
+            set_color(C_BLACK, text=True)
+            pdf.set_xy(cx + 1, row_y + 2.5)
+            pdf.cell(col_w - 2, 4, f"Img {i+1}: {CLASS_NAMES[p]}", ln=0, align="C")
+            pdf.set_font("Helvetica", size=6)
+            set_color(C_MID, text=True)
+            pdf.set_xy(cx + 1, row_y + 6.5)
+            pdf.cell(col_w - 2, 3, f"{all_probs[i][p]*100:.1f}%", ln=0, align="C")
+        pdf.set_xy(pdf.l_margin, row_y + 14)
 
-    # ── Biopsy Images + Grad-CAM page ────────────────────────────────────────
-    pdf.add_page()
-    pdf.set_font("Helvetica", style="B", size=11)
-    pdf.set_text_color(224, 230, 240)
-    pdf.set_x(pdf.l_margin)
-    pdf.cell(W, 8, "Biopsy Images & Grad-CAM Overlays", ln=1)
-    pdf.set_draw_color(40, 80, 140)
-    pdf.set_line_width(0.4)
+    # ── Divider ───────────────────────────────────────────────────────────────
+    set_color(C_BORDER, draw=True)
+    pdf.set_line_width(0.3)
     pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
-    pdf.ln(5)
+    pdf.ln(3)
 
-    img_w = (W - 8) / 2   # two panels side-by-side, 8 mm gap
+    # ── Biopsy images + Grad-CAM (compact grid) ───────────────────────────────
+    pdf.set_font("Helvetica", style="B", size=8)
+    set_color(C_DARK, text=True)
+    pdf.set_x(pdf.l_margin)
+    pdf.cell(W, 5, "Biopsy Images & Grad-CAM Overlays", ln=1)
+    pdf.ln(1)
+
+    # Fit all images on the remaining space of page 1 (or spill to page 2)
+    # Each pair (original + overlay) in one row, up to 2 pairs per row
+    has_overlay = overlay_images and any(o is not None for o in overlay_images)
+    panels_per_row = 2 if has_overlay else 4   # panels = original OR cam
+    panel_cols = panels_per_row * n if not has_overlay else 2  # layout columns
+    # Each image pair takes: original + cam side by side
+    pair_gap  = 3
+    pair_w    = (W - (n - 1) * pair_gap) / max(n, 1) if not has_overlay else (W - pair_gap) / 2
+    img_h_max = 42   # mm max height per row
 
     for i, orig in enumerate(images):
-        if pdf.get_y() > 225:
-            pdf.add_page()
-            pdf.ln(3)
-
-        caption = _latin1(
-            f"Image {i+1}  \u2014  {CLASS_NAMES[all_preds[i]]}  ({all_probs[i][all_preds[i]]*100:.1f}%)"
-        )
-        pdf.set_font("Helvetica", style="B", size=9)
-        pdf.set_text_color(160, 185, 225)
-        pdf.set_x(pdf.l_margin)
-        pdf.cell(W, 6, caption, ln=1)
-
-        y_img = pdf.get_y()
-        x_left  = pdf.l_margin
-        x_right = pdf.l_margin + img_w + 8
-
-        # Compute displayed image height (keep aspect ratio)
-        aspect  = orig.height / orig.width
-        img_h   = img_w * aspect
-
-        # Original image
-        orig_bytes = _pil_to_jpeg_bytes(orig)
-        pdf.image(io.BytesIO(orig_bytes), x=x_left, y=y_img, w=img_w)
-
-        # Grad-CAM overlay
         overlay = overlay_images[i] if (overlay_images and i < len(overlay_images)) else None
+
+        if has_overlay:
+            # Two images per row (original | cam) – new row each image
+            x_orig = pdf.l_margin + (i % 2) * (W / 2 + pair_gap / 2)
+            if i % 2 == 0:
+                row_y = pdf.get_y()
+            x_cam  = x_orig + W / 2 - pair_gap / 2
+            cell_w = W / 2 - pair_gap / 2 - 1
+        else:
+            row_y  = pdf.get_y()
+            x_orig = pdf.l_margin + i * (pair_w + pair_gap)
+            cell_w = pair_w
+
+        aspect = orig.height / orig.width
+        img_h  = min(cell_w * aspect, img_h_max)
+        img_w2 = img_h / aspect
+
+        if pdf.get_y() + img_h + 10 > pdf.h - 20 and i > 0:
+            pdf.add_page()
+            pdf.ln(2)
+            row_y = pdf.get_y()
+
+        # Caption above each original
+        pdf.set_font("Helvetica", size=6)
+        set_color(C_MID, text=True)
+        pdf.set_xy(x_orig, row_y)
+        lbl = _latin1(f"Img {i+1} -- {CLASS_NAMES[all_preds[i]]} ({all_probs[i][all_preds[i]]*100:.0f}%)")
+        pdf.cell(cell_w, 4, lbl, ln=0, align="C")
+
+        orig_bytes = _pil_to_jpeg_bytes(orig)
+        pdf.image(io.BytesIO(orig_bytes), x=x_orig + (cell_w - img_w2) / 2,
+                  y=row_y + 4, w=img_w2)
+        pdf.set_font("Helvetica", size=5)
+        set_color(C_LIGHT, text=True)
+        pdf.set_xy(x_orig, row_y + 4 + img_h + 0.5)
+        pdf.cell(cell_w, 3, "Original", ln=0, align="C")
+
         if overlay is not None:
             cam_bytes = _pil_to_jpeg_bytes(overlay)
-            pdf.image(io.BytesIO(cam_bytes), x=x_right, y=y_img, w=img_w)
+            x_cam2 = x_orig + cell_w + pair_gap
+            pdf.image(io.BytesIO(cam_bytes), x=x_cam2 + (cell_w - img_w2) / 2,
+                      y=row_y + 4, w=img_w2)
+            pdf.set_font("Helvetica", size=5)
+            set_color(C_LIGHT, text=True)
+            pdf.set_xy(x_cam2, row_y + 4 + img_h + 0.5)
+            pdf.cell(cell_w, 3, "Grad-CAM", ln=0, align="C")
 
-        # Sub-labels
-        pdf.set_font("Helvetica", size=7)
-        pdf.set_text_color(100, 125, 165)
-        pdf.set_xy(x_left, y_img + img_h + 1)
-        pdf.cell(img_w, 5, "Original", align="C")
-        if overlay is not None:
-            pdf.set_xy(x_right, y_img + img_h + 1)
-            pdf.cell(img_w, 5, "Grad-CAM Overlay", align="C")
+        # Advance Y after each row (for non-overlay layout advance after every image;
+        # for overlay layout advance after every 2nd image or if last)
+        advance = (not has_overlay) or (i % 2 == 1) or (i == n - 1)
+        if advance:
+            pdf.set_xy(pdf.l_margin, row_y + 4 + img_h + 5)
 
-        pdf.set_xy(pdf.l_margin, y_img + img_h + 8)
-        pdf.ln(2)
-
-    # ── LLM Report page ───────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
+    # PAGE 2 – AI Pathology Report text
+    # ══════════════════════════════════════════════════════════════════════════
     pdf.add_page()
-    pdf.set_font("Helvetica", style="B", size=11)
-    pdf.set_text_color(224, 230, 240)
-    pdf.set_x(pdf.l_margin)
-    pdf.cell(W, 8, "AI Pathology Report", ln=1)
-    pdf.set_draw_color(40, 80, 140)
-    pdf.set_line_width(0.4)
-    pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
-    pdf.ln(5)
+
+    # Header bar (same style, smaller)
+    set_color(C_ACCENT, fill=True)
+    pdf.rect(pdf.l_margin, pdf.t_margin, W, 9, style="F")
+    pdf.set_font("Helvetica", style="B", size=10)
+    set_color((255, 255, 255), text=True)
+    pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 1.5)
+    pdf.cell(W, 6, "AI Pathology Report", ln=0)
+    pdf.ln(14)
 
     for line in report_text.split("\n"):
         stripped = line.strip()
         if not stripped:
-            pdf.ln(3)
+            pdf.ln(2)
             continue
-        # Section header: **Header**
         if stripped.startswith("**") and stripped.endswith("**") and len(stripped) > 4:
             header = stripped[2:-2].strip()
-            if pdf.get_y() > 255:
-                pdf.add_page()
-                pdf.ln(3)
-            pdf.set_font("Helvetica", style="B", size=10)
-            pdf.set_text_color(140, 190, 255)
+            pdf.set_font("Helvetica", style="B", size=9)
+            set_color(C_ACCENT, text=True)
             pdf.set_x(pdf.l_margin)
-            pdf.cell(W, 7, _latin1(header), ln=1)
-            pdf.set_draw_color(40, 80, 140)
+            pdf.cell(W, 6, _latin1(header), ln=1)
+            set_color(C_BORDER, draw=True)
             pdf.set_line_width(0.2)
-            pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W * 0.4, pdf.get_y())
-            pdf.ln(2)
+            pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W * 0.35, pdf.get_y())
+            pdf.ln(1.5)
         else:
             body = re.sub(r'\*\*(.*?)\*\*', r'\1', stripped)
-            body = re.sub(r'\*(.*?)\*', r'\1', body)
-            pdf.set_font("Helvetica", size=9)
-            pdf.set_text_color(200, 212, 230)
+            body = re.sub(r'\*(.*?)\*',   r'\1', body)
+            pdf.set_font("Helvetica", size=8)
+            set_color(C_DARK, text=True)
             pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(W, 5, _latin1(body), align="L")
-            pdf.ln(1)
+            pdf.multi_cell(W, 4.5, _latin1(body), align="L")
+            pdf.ln(0.5)
 
-    # Footer disclaimer
-    pdf.set_y(-22)
-    pdf.set_draw_color(40, 70, 110)
-    pdf.set_line_width(0.3)
+    # ── Footer disclaimer ─────────────────────────────────────────────────────
+    pdf.set_y(-14)
+    set_color(C_BORDER, draw=True)
+    pdf.set_line_width(0.2)
     pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
-    pdf.ln(2)
-    pdf.set_font("Helvetica", size=7)
-    pdf.set_text_color(80, 105, 140)
+    pdf.ln(1.5)
+    pdf.set_font("Helvetica", size=6)
+    set_color(C_LIGHT, text=True)
     pdf.set_x(pdf.l_margin)
-    pdf.multi_cell(W, 4,
+    pdf.multi_cell(W, 3.5,
                    "For research use only. This report is generated by an automated AI system and does "
                    "not constitute medical advice. Always consult a qualified pathologist.", align="L")
 
@@ -1055,6 +1130,11 @@ with tab2:
                     else "Analyzed biopsy image"
                 )
                 st.image(im, use_column_width=True, caption=caption)
+                # Show Grad-CAM overlay if available from the cached report
+                overlays = st.session_state.get("report_overlays")
+                if overlays and i < len(overlays) and overlays[i] is not None:
+                    st.image(overlays[i], use_column_width=True,
+                             caption=f"Grad-CAM{' (Image ' + str(i+1) + ')' if len(st.session_state.imgs) > 1 else ''}")
 
         with rcol2:
             # Only call the LLM (and rebuild the PDF) when images have changed
