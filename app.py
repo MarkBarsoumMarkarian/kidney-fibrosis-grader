@@ -795,41 +795,47 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
     pdf.cell(W, 5, "Biopsy Images & Grad-CAM Overlays", ln=1)
     pdf.ln(1)
 
-    # Fit all images on the remaining space of page 1 (or spill to page 2)
-    # Each pair (original + overlay) in one row, up to 2 pairs per row
-    has_overlay = overlay_images and any(o is not None for o in overlay_images)
-    panels_per_row = 2 if has_overlay else 4   # panels = original OR cam
-    panel_cols = panels_per_row * n if not has_overlay else 2  # layout columns
-    # Each image pair takes: original + cam side by side
-    pair_gap  = 3
-    pair_w    = (W - (n - 1) * pair_gap) / max(n, 1) if not has_overlay else (W - pair_gap) / 2
-    img_h_max = 42   # mm max height per row
+    # Layout: each image rendered as "original | Grad-CAM" pair on its own row.
+    # If no overlay exists, originals are shown in a single horizontal row.
+    has_overlay = bool(overlay_images and any(o is not None for o in overlay_images))
+    pair_gap  = 4
+    img_h_max = 40   # mm max height per image
 
     for i, orig in enumerate(images):
         overlay = overlay_images[i] if (overlay_images and i < len(overlay_images)) else None
 
         if has_overlay:
-            # Two images per row (original | cam) – new row each image
-            x_orig = pdf.l_margin + (i % 2) * (W / 2 + pair_gap / 2)
-            if i % 2 == 0:
-                row_y = pdf.get_y()
-            x_cam  = x_orig + W / 2 - pair_gap / 2
-            cell_w = W / 2 - pair_gap / 2 - 1
+            # Each image pair (original + CAM) occupies its own row
+            cell_w = (W - pair_gap) / 2
         else:
-            row_y  = pdf.get_y()
-            x_orig = pdf.l_margin + i * (pair_w + pair_gap)
-            cell_w = pair_w
+            # All originals in one horizontal row
+            cell_w = (W - (n - 1) * pair_gap) / max(n, 1)
 
         aspect = orig.height / orig.width
         img_h  = min(cell_w * aspect, img_h_max)
         img_w2 = img_h / aspect
 
-        if pdf.get_y() + img_h + 10 > pdf.h - 20 and i > 0:
+        # Determine x position and row_y
+        if has_overlay:
+            row_y  = pdf.get_y()
+            x_orig = pdf.l_margin
+            x_cam  = pdf.l_margin + cell_w + pair_gap
+        else:
+            row_y  = pdf.get_y()
+            x_orig = pdf.l_margin + i * (cell_w + pair_gap)
+
+        # Page break guard
+        if pdf.get_y() + img_h + 10 > pdf.h - 20 and (has_overlay or i == 0):
             pdf.add_page()
             pdf.ln(2)
             row_y = pdf.get_y()
+            if has_overlay:
+                x_orig = pdf.l_margin
+                x_cam  = pdf.l_margin + cell_w + pair_gap
+            else:
+                x_orig = pdf.l_margin + i * (cell_w + pair_gap)
 
-        # Caption above each original
+        # Caption above original
         pdf.set_font("Helvetica", size=6)
         set_color(C_MID, text=True)
         pdf.set_xy(x_orig, row_y)
@@ -846,18 +852,16 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
 
         if overlay is not None:
             cam_bytes = _pil_to_jpeg_bytes(overlay)
-            x_cam2 = x_orig + cell_w + pair_gap
-            pdf.image(io.BytesIO(cam_bytes), x=x_cam2 + (cell_w - img_w2) / 2,
+            pdf.image(io.BytesIO(cam_bytes), x=x_cam + (cell_w - img_w2) / 2,
                       y=row_y + 4, w=img_w2)
             pdf.set_font("Helvetica", size=5)
             set_color(C_LIGHT, text=True)
-            pdf.set_xy(x_cam2, row_y + 4 + img_h + 0.5)
+            pdf.set_xy(x_cam, row_y + 4 + img_h + 0.5)
             pdf.cell(cell_w, 3, "Grad-CAM", ln=0, align="C")
 
-        # Advance Y after each row (for non-overlay layout advance after every image;
-        # for overlay layout advance after every 2nd image or if last)
-        advance = (not has_overlay) or (i % 2 == 1) or (i == n - 1)
-        if advance:
+        # Advance cursor: for overlay layout advance after every image;
+        # for no-overlay layout advance only after the last image
+        if has_overlay or i == n - 1:
             pdf.set_xy(pdf.l_margin, row_y + 4 + img_h + 5)
 
     # ══════════════════════════════════════════════════════════════════════════
