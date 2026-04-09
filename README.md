@@ -54,9 +54,9 @@ Three algorithms are available, all implemented from scratch with NumPy/OpenCV (
 
 | Method | Approach | Reference |
 |---|---|---|
-| **Macenko** | SVD-based stain-vector separation in optical-density space — most accurate for trichrome | Macenko et al., *A method for normalizing histology slides for quantitative analysis*, ISBI 2009 · [doi:10.1109/ISBI.2009.5193250](https://doi.org/10.1109/ISBI.2009.5193250) |
-| **Reinhard** | Per-channel mean/std transfer in LAB colour space — fast and simple | Reinhard et al., *Color transfer between images*, IEEE CG&A 2001 · [doi:10.1109/38.946629](https://doi.org/10.1109/38.946629) |
-| **Vahadane** | Full LAB histogram matching via quantile interpolation — robust to outliers | Vahadane et al., *Structure-Preserving Color Normalization and Sparse Stain Separation for Histological Images*, IEEE TMI 2016 · [doi:10.1109/TMI.2016.2529665](https://doi.org/10.1109/TMI.2016.2529665) |
+| **Macenko** | SVD-based stain-vector separation in optical-density space, most accurate for trichrome | Macenko et al., *A method for normalizing histology slides for quantitative analysis*, ISBI 2009 · [doi:10.1109/ISBI.2009.5193250](https://doi.org/10.1109/ISBI.2009.5193250) |
+| **Reinhard** | Per-channel mean/std transfer in LAB colour space, fast and simple | Reinhard et al., *Color transfer between images*, IEEE CG&A 2001 · [doi:10.1109/38.946629](https://doi.org/10.1109/38.946629) |
+| **Vahadane** | Full LAB histogram matching via quantile interpolation, robust to outliers | Vahadane et al., *Structure-Preserving Color Normalization and Sparse Stain Separation for Histological Images*, IEEE TMI 2016 · [doi:10.1109/TMI.2016.2529665](https://doi.org/10.1109/TMI.2016.2529665) |
 
 ---
 
