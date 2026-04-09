@@ -481,13 +481,15 @@ def vahadane_normalise(source: Image.Image, reference: Image.Image) -> Image.Ima
     sl = cv2.cvtColor(s, cv2.COLOR_RGB2LAB).astype(np.float32)
     rl = cv2.cvtColor(r, cv2.COLOR_RGB2LAB).astype(np.float32)
     out = sl.copy()
+    quantiles = np.linspace(0, 1, 1024)
     for ch in range(3):
-        src_sorted = np.sort(sl[:, :, ch].flatten())
-        ref_sorted = np.sort(rl[:, :, ch].flatten())
+        src_vals = sl[:, :, ch].flatten()
+        ref_vals = rl[:, :, ch].flatten()
+        # Build a quantile lookup table of equal length for both distributions
+        src_quantiles = np.quantile(src_vals, quantiles)
+        ref_quantiles = np.quantile(ref_vals, quantiles)
         # Map each source pixel to the matching quantile in the reference distribution
-        out[:, :, ch] = np.interp(
-            sl[:, :, ch].flatten(), src_sorted, ref_sorted
-        ).reshape(sl[:, :, ch].shape)
+        out[:, :, ch] = np.interp(src_vals, src_quantiles, ref_quantiles).reshape(sl[:, :, ch].shape)
     return Image.fromarray(cv2.cvtColor(np.clip(out, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB))
 
 
