@@ -545,35 +545,43 @@ def get_unified_report(images, all_probs, all_preds, avg_probs, consensus_pred, 
             f"model probabilities across all images.\n\nPer-image grades:\n{per_image_summary}"
         )
 
-    prompt = f"""You are an expert nephropathologist and clinical AI assistant analyzing trichrome-stained kidney biopsy image(s).
+    prompt = f"""You are an expert nephropathologist reviewing a trichrome-stained kidney biopsy.
 
-Automated Model Output:
+Automated model output:
 - Consensus Grade: {CLASS_NAMES[consensus_pred]} ({CLASS_RANGE[consensus_pred]})
-- Consensus Confidence: {consensus_conf:.1f}%
-- Averaged probability breakdown:
-{avg_breakdown}
+- Confidence: {consensus_conf:.1f}%
+- Probability breakdown: {avg_breakdown}
 {multi_note}
-Carefully examine the biopsy image(s) and produce a single cohesive clinical report with exactly these 6 sections:
+You are provided with:
+1. The original biopsy image(s)
+2. Grad-CAM overlay(s) — red/yellow = regions most discriminative for the predicted grade
+
+CRITICAL INSTRUCTION: Every sentence you write must be specific to what you actually see in THIS image. \
+Do not write anything that would be generically true for any {CLASS_NAMES[consensus_pred]} biopsy. \
+If you catch yourself writing a general statement about fibrosis or ESKD risk, delete it and replace it \
+with something anchored to a specific visual feature in this image.
 
 **Visual Observations**
-Describe what you see — collagen deposition (blue/green staining), tubular atrophy, interstitial expansion, glomerular and vascular changes. If multiple images are provided, note consistency or variation across them. For each biopsy image a Grad-CAM heatmap overlay is also provided immediately after it: red/yellow regions are the areas most discriminative for the predicted grade. Reference these highlighted regions specifically in your observations.
+Describe the spatial distribution of collagen deposition — is it periglomerular, peritubular, or diffuse? \
+What proportion of the cortex appears affected? Are tubules atrophied uniformly or focally? \
+What do the glomeruli look like — sclerotic, collapsed, or relatively preserved? \
+Where exactly does the Grad-CAM heatmap focus — periglomerular zones, interstitium, vascular areas? \
+Does that focus make sense given what you see there?
 
-**Agreement with Model Prediction**
-Does your visual assessment agree with the consensus grade? Cite specific visual features that support or challenge the model output.
+**Model Agreement**
+Does the grade match what you see? If yes, which specific visual feature is the strongest evidence? \
+If the Grad-CAM focuses on an unexpected region, say so and explain why it might or might not be valid.
 
-**ESKD Risk & Progression**
-What is the risk of end-stage kidney disease at this grade? How likely is progression, and what histological findings drive that risk?
+**What this specific biopsy tells us about progression**
+Based on the pattern you see (not fibrosis severity in general), what is the likely etiology — \
+diabetic nephropathy, hypertensive nephrosclerosis, IgA, or other? What specific feature drives that inference?
 
-**Treatment Approach**
-Based on the fibrosis grade and visual findings, is this patient a candidate for conservative management (blood pressure control, RAAS blockade, lifestyle) or does the severity warrant targeted/interventional therapy? Discuss whether a combined multimodal approach would be appropriate and what that would involve.
-
-**Clinical Recommendations**
-What next steps would a nephrologist consider — monitoring intervals, specific interventions, referrals, or additional workup?
+**Treatment & Recommendations**
+One paragraph. Be specific to the findings, not generic. If glomeruli appear preserved, note that. \
+If vascular changes are prominent, address that specifically.
 
 **Plain-Language Summary**
-Explain the findings and treatment direction in simple terms suitable for a patient.
-
-Keep each section to 3-5 sentences. Do not number the sections. Do not add any disclaimer or closing statement at the end."""
+2-3 sentences for the patient. No jargon."""
 
     content_parts = [{"type": "text", "text": prompt}]
     for i, img in enumerate(images):
