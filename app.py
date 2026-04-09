@@ -5,6 +5,7 @@ import numpy as np
 from PIL import Image
 import torchvision.transforms as transforms
 import sys, os
+import re
 import requests
 import base64
 import io
@@ -545,35 +546,43 @@ def get_unified_report(images, all_probs, all_preds, avg_probs, consensus_pred, 
             f"model probabilities across all images.\n\nPer-image grades:\n{per_image_summary}"
         )
 
-    prompt = f"""You are an expert nephropathologist and clinical AI assistant analyzing trichrome-stained kidney biopsy image(s).
+    prompt = f"""You are an expert nephropathologist reviewing a trichrome-stained kidney biopsy.
 
-Automated Model Output:
+Automated model output:
 - Consensus Grade: {CLASS_NAMES[consensus_pred]} ({CLASS_RANGE[consensus_pred]})
-- Consensus Confidence: {consensus_conf:.1f}%
-- Averaged probability breakdown:
-{avg_breakdown}
+- Confidence: {consensus_conf:.1f}%
+- Probability breakdown: {avg_breakdown}
 {multi_note}
-Carefully examine the biopsy image(s) and produce a single cohesive clinical report with exactly these 6 sections:
+You are provided with:
+1. The original biopsy image(s)
+2. Grad-CAM overlay(s) — red/yellow = regions most discriminative for the predicted grade
+
+CRITICAL INSTRUCTION: Every sentence you write must be specific to what you actually see in THIS image. \
+Do not write anything that would be generically true for any {CLASS_NAMES[consensus_pred]} biopsy. \
+If you catch yourself writing a general statement about fibrosis or ESKD risk, delete it and replace it \
+with something anchored to a specific visual feature in this image.
 
 **Visual Observations**
-Describe what you see — collagen deposition (blue/green staining), tubular atrophy, interstitial expansion, glomerular and vascular changes. If multiple images are provided, note consistency or variation across them. For each biopsy image a Grad-CAM heatmap overlay is also provided immediately after it: red/yellow regions are the areas most discriminative for the predicted grade. Reference these highlighted regions specifically in your observations.
+Describe the spatial distribution of collagen deposition — is it periglomerular, peritubular, or diffuse? \
+What proportion of the cortex appears affected? Are tubules atrophied uniformly or focally? \
+What do the glomeruli look like — sclerotic, collapsed, or relatively preserved? \
+Where exactly does the Grad-CAM heatmap focus — periglomerular zones, interstitium, vascular areas? \
+Does that focus make sense given what you see there?
 
-**Agreement with Model Prediction**
-Does your visual assessment agree with the consensus grade? Cite specific visual features that support or challenge the model output.
+**Model Agreement**
+Does the grade match what you see? If yes, which specific visual feature is the strongest evidence? \
+If the Grad-CAM focuses on an unexpected region, say so and explain why it might or might not be valid.
 
-**ESKD Risk & Progression**
-What is the risk of end-stage kidney disease at this grade? How likely is progression, and what histological findings drive that risk?
+**What this specific biopsy tells us about progression**
+Based on the pattern you see (not fibrosis severity in general), what is the likely etiology — \
+diabetic nephropathy, hypertensive nephrosclerosis, IgA, or other? What specific feature drives that inference?
 
-**Treatment Approach**
-Based on the fibrosis grade and visual findings, is this patient a candidate for conservative management (blood pressure control, RAAS blockade, lifestyle) or does the severity warrant targeted/interventional therapy? Discuss whether a combined multimodal approach would be appropriate and what that would involve.
-
-**Clinical Recommendations**
-What next steps would a nephrologist consider — monitoring intervals, specific interventions, referrals, or additional workup?
+**Treatment & Recommendations**
+One paragraph. Be specific to the findings, not generic. If glomeruli appear preserved, note that. \
+If vascular changes are prominent, address that specifically.
 
 **Plain-Language Summary**
-Explain the findings and treatment direction in simple terms suitable for a patient.
-
-Keep each section to 3-5 sentences. Do not number the sections. Do not add any disclaimer or closing statement at the end."""
+2-3 sentences for the patient. No jargon."""
 
     content_parts = [{"type": "text", "text": prompt}]
     for i, img in enumerate(images):
@@ -606,6 +615,228 @@ Keep each section to 3-5 sentences. Do not number the sections. Do not add any d
     response = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=90)
     response.raise_for_status()
     return response.json()["choices"][0]["message"]["content"]
+
+
+# ── PDF Report Generation ──────────────────────────────────────────────────────
+def _pil_to_jpeg_bytes(img: Image.Image, max_px: int = 900) -> bytes:
+    """Return JPEG bytes for a PIL image, downsampled if larger than max_px on the long side."""
+    if max(img.width, img.height) > max_px:
+        ratio = max_px / max(img.width, img.height)
+        img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=82)
+    return buf.getvalue()
+
+
+def _latin1(text: str) -> str:
+    """Decode HTML entities and coerce to Latin-1 for fpdf2 core fonts."""
+    import html as _html
+    text = _html.unescape(text)
+    for src, dst in [("\u2013", "-"), ("\u2014", "--"), ("\u2018", "'"), ("\u2019", "'"),
+                     ("\u201c", '"'), ("\u201d", '"'), ("\u2022", "-"), ("\u2026", "...")]:
+        text = text.replace(src, dst)
+    return text.encode("latin-1", errors="replace").decode("latin-1")
+
+
+def generate_pdf_report(images, overlay_images, all_probs, all_preds,
+                        avg_probs, consensus_pred, consensus_conf, report_text):
+    """Build an A4 PDF containing the grade summary, biopsy + Grad-CAM images, and the LLM report."""
+    from fpdf import FPDF
+    from datetime import date as _date
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=18)
+    pdf.set_margins(left=15, top=15, right=15)
+    W = pdf.w - pdf.l_margin - pdf.r_margin   # usable width ≈ 180 mm
+
+    # ── Page 1: Summary ──────────────────────────────────────────────────────
+    pdf.add_page()
+
+    # Title banner
+    pdf.set_fill_color(17, 24, 39)
+    pdf.rect(pdf.l_margin, pdf.t_margin, W, 20, style="F")
+    pdf.set_font("Helvetica", style="B", size=14)
+    pdf.set_text_color(224, 230, 240)
+    pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 3)
+    pdf.cell(W - 8, 8, _latin1("Kidney Fibrosis Grader \u2014 Pathology Report"), ln=0)
+    pdf.set_font("Helvetica", size=8)
+    pdf.set_text_color(100, 130, 180)
+    pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 12)
+    pdf.cell(W - 8, 6,
+             _latin1(f"Generated {_date.today().strftime('%B %d, %Y')}  \u00b7  "
+                     "ResNet-FPN  \u00b7  Llama 4 Scout Vision"), ln=0)
+    pdf.ln(26)
+
+    # Consensus grade box
+    import html as _html
+    grade_name  = _latin1(CLASS_NAMES[consensus_pred])
+    grade_range = _latin1(_html.unescape(CLASS_RANGE[consensus_pred]))
+    box_y = pdf.get_y()
+    pdf.set_fill_color(22, 35, 58)
+    pdf.set_draw_color(40, 80, 140)
+    pdf.set_line_width(0.5)
+    pdf.rect(pdf.l_margin, box_y, W, 26, style="FD")
+    pdf.set_font("Helvetica", size=7)
+    pdf.set_text_color(100, 140, 200)
+    pdf.set_xy(pdf.l_margin + 5, box_y + 3)
+    pdf.cell(W, 5, "CONSENSUS GRADE", ln=1)
+    pdf.set_font("Helvetica", style="B", size=15)
+    pdf.set_text_color(224, 230, 240)
+    pdf.set_x(pdf.l_margin + 5)
+    pdf.cell(W, 8, f"{grade_name}  ({grade_range})", ln=1)
+    pdf.set_font("Helvetica", size=9)
+    pdf.set_text_color(150, 180, 220)
+    pdf.set_x(pdf.l_margin + 5)
+    pdf.cell(W, 6, f"Model confidence: {consensus_conf:.1f}%", ln=1)
+    pdf.ln(6)
+
+    # Probability breakdown
+    pdf.set_font("Helvetica", style="B", size=9)
+    pdf.set_text_color(140, 170, 220)
+    pdf.set_x(pdf.l_margin)
+    pdf.cell(W, 6, "PROBABILITY BREAKDOWN", ln=1)
+    for i, short in enumerate(CLASS_SHORT):
+        pct = avg_probs[i] * 100
+        bar_w = W * pct / 100
+        bar_y = pdf.get_y()
+        pdf.set_fill_color(30, 45, 75)
+        pdf.rect(pdf.l_margin, bar_y, W, 6, style="F")
+        # coloured fill
+        r, g, b = (22, 163, 74) if i == 0 else (217, 119, 6) if i == 1 else (234, 88, 12) if i == 2 else (220, 38, 38)
+        pdf.set_fill_color(r, g, b)
+        if bar_w > 0:
+            pdf.rect(pdf.l_margin, bar_y, bar_w, 6, style="F")
+        pdf.set_font("Helvetica", size=8)
+        pdf.set_text_color(220, 230, 245)
+        pdf.set_xy(pdf.l_margin + 2, bar_y)
+        pdf.cell(W - 4, 6, _latin1(f"{short}: {pct:.1f}%"), ln=1)
+    pdf.ln(5)
+
+    # Per-image breakdown (multi-image)
+    n = len(images)
+    if n > 1:
+        pdf.set_font("Helvetica", style="B", size=9)
+        pdf.set_text_color(140, 170, 220)
+        pdf.set_x(pdf.l_margin)
+        pdf.cell(W, 6, f"PER-IMAGE GRADES  ({n} images)", ln=1)
+        for i in range(n):
+            p = all_preds[i]
+            label = _latin1(f"  Image {i+1}: {CLASS_NAMES[p]}  ({all_probs[i][p]*100:.1f}% confidence)")
+            pdf.set_font("Helvetica", size=9)
+            pdf.set_text_color(200, 215, 235)
+            pdf.set_x(pdf.l_margin)
+            pdf.cell(W, 6, label, ln=1)
+        pdf.ln(3)
+
+    # ── Biopsy Images + Grad-CAM page ────────────────────────────────────────
+    pdf.add_page()
+    pdf.set_font("Helvetica", style="B", size=11)
+    pdf.set_text_color(224, 230, 240)
+    pdf.set_x(pdf.l_margin)
+    pdf.cell(W, 8, "Biopsy Images & Grad-CAM Overlays", ln=1)
+    pdf.set_draw_color(40, 80, 140)
+    pdf.set_line_width(0.4)
+    pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+    pdf.ln(5)
+
+    img_w = (W - 8) / 2   # two panels side-by-side, 8 mm gap
+
+    for i, orig in enumerate(images):
+        if pdf.get_y() > 225:
+            pdf.add_page()
+            pdf.ln(3)
+
+        caption = _latin1(
+            f"Image {i+1}  \u2014  {CLASS_NAMES[all_preds[i]]}  ({all_probs[i][all_preds[i]]*100:.1f}%)"
+        )
+        pdf.set_font("Helvetica", style="B", size=9)
+        pdf.set_text_color(160, 185, 225)
+        pdf.set_x(pdf.l_margin)
+        pdf.cell(W, 6, caption, ln=1)
+
+        y_img = pdf.get_y()
+        x_left  = pdf.l_margin
+        x_right = pdf.l_margin + img_w + 8
+
+        # Compute displayed image height (keep aspect ratio)
+        aspect  = orig.height / orig.width
+        img_h   = img_w * aspect
+
+        # Original image
+        orig_bytes = _pil_to_jpeg_bytes(orig)
+        pdf.image(io.BytesIO(orig_bytes), x=x_left, y=y_img, w=img_w)
+
+        # Grad-CAM overlay
+        overlay = overlay_images[i] if (overlay_images and i < len(overlay_images)) else None
+        if overlay is not None:
+            cam_bytes = _pil_to_jpeg_bytes(overlay)
+            pdf.image(io.BytesIO(cam_bytes), x=x_right, y=y_img, w=img_w)
+
+        # Sub-labels
+        pdf.set_font("Helvetica", size=7)
+        pdf.set_text_color(100, 125, 165)
+        pdf.set_xy(x_left, y_img + img_h + 1)
+        pdf.cell(img_w, 5, "Original", align="C")
+        if overlay is not None:
+            pdf.set_xy(x_right, y_img + img_h + 1)
+            pdf.cell(img_w, 5, "Grad-CAM Overlay", align="C")
+
+        pdf.set_xy(pdf.l_margin, y_img + img_h + 8)
+        pdf.ln(2)
+
+    # ── LLM Report page ───────────────────────────────────────────────────────
+    pdf.add_page()
+    pdf.set_font("Helvetica", style="B", size=11)
+    pdf.set_text_color(224, 230, 240)
+    pdf.set_x(pdf.l_margin)
+    pdf.cell(W, 8, "AI Pathology Report", ln=1)
+    pdf.set_draw_color(40, 80, 140)
+    pdf.set_line_width(0.4)
+    pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+    pdf.ln(5)
+
+    for line in report_text.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            pdf.ln(3)
+            continue
+        # Section header: **Header**
+        if stripped.startswith("**") and stripped.endswith("**") and len(stripped) > 4:
+            header = stripped[2:-2].strip()
+            if pdf.get_y() > 255:
+                pdf.add_page()
+                pdf.ln(3)
+            pdf.set_font("Helvetica", style="B", size=10)
+            pdf.set_text_color(140, 190, 255)
+            pdf.set_x(pdf.l_margin)
+            pdf.cell(W, 7, _latin1(header), ln=1)
+            pdf.set_draw_color(40, 80, 140)
+            pdf.set_line_width(0.2)
+            pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W * 0.4, pdf.get_y())
+            pdf.ln(2)
+        else:
+            body = re.sub(r'\*\*(.*?)\*\*', r'\1', stripped)
+            body = re.sub(r'\*(.*?)\*', r'\1', body)
+            pdf.set_font("Helvetica", size=9)
+            pdf.set_text_color(200, 212, 230)
+            pdf.set_x(pdf.l_margin)
+            pdf.multi_cell(W, 5, _latin1(body), align="L")
+            pdf.ln(1)
+
+    # Footer disclaimer
+    pdf.set_y(-22)
+    pdf.set_draw_color(40, 70, 110)
+    pdf.set_line_width(0.3)
+    pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W, pdf.get_y())
+    pdf.ln(2)
+    pdf.set_font("Helvetica", size=7)
+    pdf.set_text_color(80, 105, 140)
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(W, 4,
+                   "For research use only. This report is generated by an automated AI system and does "
+                   "not constitute medical advice. Always consult a qualified pathologist.", align="L")
+
+    return bytes(pdf.output())
 
 
 # ── Top Bar ────────────────────────────────────────────────────────────────────
@@ -801,6 +1032,10 @@ with tab2:
         consensus_pred = int(np.argmax(avg_probs))
         consensus_conf = avg_probs[consensus_pred] * 100
 
+        # Cache key — invalidated whenever the uploaded images change
+        _thumb_bytes = b"".join(im.resize((8, 8)).tobytes() for im in st.session_state.imgs)
+        _report_key  = hashlib.md5(_thumb_bytes).hexdigest()
+
         st.markdown("""
 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
     <div style="font-family:'Playfair Display',serif; font-size:18px; font-weight:700; color:#e0e6f0;">Pathology Report</div>
@@ -822,41 +1057,67 @@ with tab2:
                 st.image(im, use_column_width=True, caption=caption)
 
         with rcol2:
-            with st.spinner("Generating pathology report..."):
-                try:
-                    # Compute Grad-CAM overlays for all images to pass to the LLM
-                    overlay_images = []
-                    for im in st.session_state.imgs:
-                        try:
-                            heatmap_rgb, overlay_np, _, _, _ = compute_gradcam(im, target_class=None)
-                            overlay_images.append(Image.fromarray(overlay_np))
-                        except Exception as cam_err:
-                            st.warning(f"Grad-CAM overlay unavailable for one image: {cam_err}")
-                            overlay_images.append(None)
+            # Only call the LLM (and rebuild the PDF) when images have changed
+            if st.session_state.get("report_key") != _report_key:
+                with st.spinner("Generating pathology report..."):
+                    try:
+                        # Compute Grad-CAM overlays for all images to pass to the LLM
+                        overlay_images = []
+                        for im in st.session_state.imgs:
+                            try:
+                                heatmap_rgb, overlay_np, _, _, _ = compute_gradcam(im, target_class=None)
+                                overlay_images.append(Image.fromarray(overlay_np))
+                            except Exception as cam_err:
+                                st.warning(f"Grad-CAM overlay unavailable for one image: {cam_err}")
+                                overlay_images.append(None)
 
-                    report = get_unified_report(
-                        images=st.session_state.imgs,
-                        all_probs=all_probs,
-                        all_preds=all_preds,
-                        avg_probs=avg_probs,
-                        consensus_pred=consensus_pred,
-                        consensus_conf=consensus_conf,
-                        overlay_images=overlay_images,
-                    )
-                    st.markdown('<div class="ai-body">', unsafe_allow_html=True)
-                    st.markdown(report)
-                    st.markdown('</div>', unsafe_allow_html=True)
-                except requests.exceptions.HTTPError as e:
-                    if e.response.status_code == 401:
-                        st.error("Groq API key missing. Add GROQ_API_KEY to Streamlit secrets.")
-                    elif e.response.status_code == 429:
-                        st.warning("Rate limit reached. Please wait a moment and retry.")
-                    else:
+                        report = get_unified_report(
+                            images=st.session_state.imgs,
+                            all_probs=all_probs,
+                            all_preds=all_preds,
+                            avg_probs=avg_probs,
+                            consensus_pred=consensus_pred,
+                            consensus_conf=consensus_conf,
+                            overlay_images=overlay_images,
+                        )
+                        pdf_bytes = generate_pdf_report(
+                            images=st.session_state.imgs,
+                            overlay_images=overlay_images,
+                            all_probs=all_probs,
+                            all_preds=all_preds,
+                            avg_probs=avg_probs,
+                            consensus_pred=consensus_pred,
+                            consensus_conf=consensus_conf,
+                            report_text=report,
+                        )
+                        st.session_state.report_key      = _report_key
+                        st.session_state.report_text     = report
+                        st.session_state.report_overlays = overlay_images
+                        st.session_state.report_pdf      = pdf_bytes
+                    except requests.exceptions.HTTPError as e:
+                        if e.response.status_code == 401:
+                            st.error("Groq API key missing. Add GROQ_API_KEY to Streamlit secrets.")
+                        elif e.response.status_code == 429:
+                            st.warning("Rate limit reached. Please wait a moment and retry.")
+                        else:
+                            st.error(f"Report unavailable: {str(e)}")
+                    except ValueError as e:
+                        st.error(str(e))
+                    except Exception as e:
                         st.error(f"Report unavailable: {str(e)}")
-                except ValueError as e:
-                    st.error(str(e))
-                except Exception as e:
-                    st.error(f"Report unavailable: {str(e)}")
+
+            # Display cached report and download button
+            if st.session_state.get("report_key") == _report_key and "report_text" in st.session_state:
+                st.markdown('<div class="ai-body">', unsafe_allow_html=True)
+                st.markdown(st.session_state.report_text)
+                st.markdown('</div>', unsafe_allow_html=True)
+                st.download_button(
+                    label="⬇ Download PDF Report",
+                    data=st.session_state.report_pdf,
+                    file_name="kidney_fibrosis_report.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
     else:
         st.markdown("""
 <div class="await-wrap">
