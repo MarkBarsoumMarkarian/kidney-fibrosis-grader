@@ -513,8 +513,8 @@ def compute_stain_metrics(img: Image.Image):
 
 
 # ── LLM Report ─────────────────────────────────────────────────────────────────
-def get_unified_report(images, all_probs, all_preds, avg_probs, consensus_pred, consensus_conf):
-    """Llama 4 Scout: sees all images + grades, returns one cohesive report."""
+def get_unified_report(images, all_probs, all_preds, avg_probs, consensus_pred, consensus_conf, overlay_images=None):
+    """Llama 4 Scout: sees all images + Grad-CAM overlays + grades, returns one cohesive report."""
     groq_key = os.environ.get("GROQ_API_KEY", "")
     if not groq_key:
         try:
@@ -556,7 +556,7 @@ Automated Model Output:
 Carefully examine the biopsy image(s) and produce a single cohesive clinical report with exactly these 6 sections:
 
 **Visual Observations**
-Describe what you see — collagen deposition (blue/green staining), tubular atrophy, interstitial expansion, glomerular and vascular changes. If multiple images are provided, note consistency or variation across them.
+Describe what you see — collagen deposition (blue/green staining), tubular atrophy, interstitial expansion, glomerular and vascular changes. If multiple images are provided, note consistency or variation across them. For each biopsy image a Grad-CAM heatmap overlay is also provided immediately after it: red/yellow regions are the areas most discriminative for the predicted grade. Reference these highlighted regions specifically in your observations.
 
 **Agreement with Model Prediction**
 Does your visual assessment agree with the consensus grade? Cite specific visual features that support or challenge the model output.
@@ -576,7 +576,7 @@ Explain the findings and treatment direction in simple terms suitable for a pati
 Keep each section to 3-5 sentences. Do not number the sections. Do not add any disclaimer or closing statement at the end."""
 
     content_parts = [{"type": "text", "text": prompt}]
-    for img in images:
+    for i, img in enumerate(images):
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
         b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -584,6 +584,14 @@ Keep each section to 3-5 sentences. Do not number the sections. Do not add any d
             "type": "image_url",
             "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
         })
+        if overlay_images and i < len(overlay_images) and overlay_images[i] is not None:
+            buf_cam = io.BytesIO()
+            overlay_images[i].save(buf_cam, format="JPEG", quality=85)
+            b64_cam = base64.b64encode(buf_cam.getvalue()).decode("utf-8")
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64_cam}"}
+            })
 
     headers = {
         "Content-Type": "application/json",
@@ -816,6 +824,15 @@ with tab2:
         with rcol2:
             with st.spinner("Generating pathology report..."):
                 try:
+                    # Compute Grad-CAM overlays for all images to pass to the LLM
+                    overlay_images = []
+                    for im in st.session_state.imgs:
+                        try:
+                            heatmap_rgb, overlay_np, _, _, _ = compute_gradcam(im, target_class=None)
+                            overlay_images.append(Image.fromarray(overlay_np))
+                        except Exception:
+                            overlay_images.append(None)
+
                     report = get_unified_report(
                         images=st.session_state.imgs,
                         all_probs=all_probs,
@@ -823,6 +840,7 @@ with tab2:
                         avg_probs=avg_probs,
                         consensus_pred=consensus_pred,
                         consensus_conf=consensus_conf,
+                        overlay_images=overlay_images,
                     )
                     st.markdown('<div class="ai-body">', unsafe_allow_html=True)
                     st.markdown(report)
