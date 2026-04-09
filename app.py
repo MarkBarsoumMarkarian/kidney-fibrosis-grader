@@ -830,7 +830,8 @@ with tab2:
                         try:
                             heatmap_rgb, overlay_np, _, _, _ = compute_gradcam(im, target_class=None)
                             overlay_images.append(Image.fromarray(overlay_np))
-                        except Exception:
+                        except Exception as cam_err:
+                            st.warning(f"Grad-CAM overlay unavailable for one image: {cam_err}")
                             overlay_images.append(None)
 
                     report = get_unified_report(
