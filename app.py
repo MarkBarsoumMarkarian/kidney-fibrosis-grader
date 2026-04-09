@@ -417,13 +417,18 @@ def compute_gradcam(img: Image.Image, target_class: int = None):
 
 
 # ── Stain Normalisation ────────────────────────────────────────────────────────
+def _get_od(img_np: np.ndarray):
+    """Convert uint8 RGB image to optical density (OD) space."""
+    img = np.maximum(img_np.astype(np.float32) / 255.0, 1e-6)
+    return -np.log(img)
+
+
 def _get_stain_matrix(img_np: np.ndarray, lum_thr: float = 0.8):
-    img = img_np.astype(np.float32) / 255.0 + 1e-6
-    od  = -np.log(np.clip(img, 1e-6, 1.0))
+    od   = _get_od(img_np)
     mask = (od * od).sum(axis=2) > (1 - lum_thr) ** 2
     od_m = od[mask].reshape(-1, 3)
     if len(od_m) < 10:
-        return None
+        return None, None
     _, _, Vt  = np.linalg.svd(od_m, full_matrices=False)
     plane     = Vt[:2]
     proj      = od_m @ plane.T
@@ -433,31 +438,33 @@ def _get_stain_matrix(img_np: np.ndarray, lum_thr: float = 0.8):
     v2 = plane[0] * np.cos(phi_max) + plane[1] * np.sin(phi_max)
     if v1[0] < v2[0]:
         v1, v2 = v2, v1
-    return np.stack([v1 / (np.linalg.norm(v1) + 1e-8),
-                     v2 / (np.linalg.norm(v2) + 1e-8)], axis=0)
+    S = np.stack([v1 / (np.linalg.norm(v1) + 1e-8),
+                  v2 / (np.linalg.norm(v2) + 1e-8)], axis=0)
+    return S, mask
 
 
 def _get_concentrations(img_np: np.ndarray, S: np.ndarray):
-    img  = img_np.astype(np.float32) / 255.0 + 1e-6
-    od   = -np.log(np.clip(img, 1e-6, 1.0))
+    od   = _get_od(img_np)
     h, w = od.shape[:2]
-    return (od.reshape(-1, 3) @ np.linalg.pinv(S)).reshape(h, w, 2)
+    return np.maximum((od.reshape(-1, 3) @ np.linalg.pinv(S)).reshape(h, w, 2), 0)
 
 
 def macenko_normalise(source: Image.Image, reference: Image.Image) -> Image.Image:
     src_np, ref_np = np.array(source.convert("RGB")), np.array(reference.convert("RGB"))
-    S_s = _get_stain_matrix(src_np)
-    S_r = _get_stain_matrix(ref_np)
+    S_s, mask_s = _get_stain_matrix(src_np)
+    S_r, mask_r = _get_stain_matrix(ref_np)
     if S_s is None or S_r is None:
         return source
     C_s    = _get_concentrations(src_np, S_s)
     C_r    = _get_concentrations(ref_np, S_r)
-    max_s  = np.percentile(C_s.reshape(-1, 2), 99, axis=0) + 1e-8
-    max_r  = np.percentile(C_r.reshape(-1, 2), 99, axis=0) + 1e-8
+    # Compute max concentrations only over tissue (non-background) pixels so
+    # the scaling ratio is not skewed by mostly-white source or reference images.
+    max_s  = np.percentile(C_s[mask_s].reshape(-1, 2), 99, axis=0) + 1e-8
+    max_r  = np.percentile(C_r[mask_r].reshape(-1, 2), 99, axis=0) + 1e-8
     C_norm = C_s * (max_r / max_s)
     h, w   = C_norm.shape[:2]
     od_norm  = (C_norm.reshape(-1, 2) @ S_r).reshape(h, w, 3)
-    img_norm = np.clip((np.exp(-od_norm) - 1e-6) * 255, 0, 255).astype(np.uint8)
+    img_norm = np.clip(np.exp(-od_norm) * 255, 0, 255).astype(np.uint8)
     return Image.fromarray(img_norm)
 
 
