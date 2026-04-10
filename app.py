@@ -679,7 +679,7 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
     pdf.set_text_color(199, 218, 255)
     pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 6)
     pdf.cell(W - 8, 4,
-             _latin1(f"Pathology Report  |  {_date.today().strftime('%B %d, %Y')}  |  ResNet-FPN  |  Llama 4 Scout Vision"),
+             _latin1(f"Clinicopathological Observation  |  {_date.today().strftime('%B %d, %Y')}  |  ResNet-FPN  |  Llama 4 Scout Vision"),
              ln=0)
     y = pdf.t_margin + 14
 
@@ -830,7 +830,7 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
     pdf.set_font("Helvetica", style="B", size=10)
     pdf.set_text_color(255, 255, 255)
     pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 1.5)
-    pdf.cell(W, 6, "AI Pathology Report", ln=0)
+    pdf.cell(W, 6, "AI Clinicopathological Observation", ln=0)
     pdf.set_xy(pdf.l_margin, pdf.t_margin + 12)
 
     # Body text — stop before footer
@@ -904,7 +904,7 @@ for key in ["imgs", "all_probs", "all_preds"]:
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4 = st.tabs([
     "Analysis",
-    "Pathology Report",
+    "Clinicopathological Observation",
     "Grad-CAM Explainability",
     "Stain Normalisation",
 ])
@@ -1056,7 +1056,7 @@ with tab1:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — PATHOLOGY REPORT
+# TAB 2 — Clinicopathological Observation
 # ══════════════════════════════════════════════════════════════════════════════
 with tab2:
     if (st.session_state.imgs is not None
@@ -1075,7 +1075,7 @@ with tab2:
 
         st.markdown("""
 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
-    <div style="font-family:'Playfair Display',serif; font-size:18px; font-weight:700; color:#e0e6f0;">Pathology Report</div>
+    <div style="font-family:'Playfair Display',serif; font-size:18px; font-weight:700; color:#e0e6f0;">Clinicopathological Observation</div>
     <div style="font-family:'IBM Plex Mono',monospace; font-size:9px; font-weight:500; letter-spacing:0.08em;
                 background:#1a2d1a; color:#6ee7b7; border:1px solid #1a4a35; padding:4px 10px; border-radius:4px;">
         LLAMA 4 SCOUT &nbsp;·&nbsp; VISION</div>
@@ -1101,7 +1101,7 @@ with tab2:
         with rcol2:
             # Only call the LLM (and rebuild the PDF) when images have changed
             if st.session_state.get("report_key") != _report_key:
-                with st.spinner("Generating pathology report..."):
+                with st.spinner("Generating Clinicopathological Observation..."):
                     try:
                         # Compute Grad-CAM overlays for all images to pass to the LLM
                         overlay_images = []
