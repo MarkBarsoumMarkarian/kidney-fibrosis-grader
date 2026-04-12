@@ -852,7 +852,7 @@ def _latin1(text: str) -> str:
 def generate_pdf_report(images, overlay_images, all_probs, all_preds,
                         avg_probs, consensus_pred, consensus_conf, report_text,
                         if_result=None):
-    from fpdf import FPDF
+    from fpdf import FPDF, XPos, YPos
     from datetime import date as _date
     import html as _html
 
@@ -886,13 +886,13 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
     pdf.set_font("Helvetica", style="B", size=11)
     pdf.set_text_color(255, 255, 255)
     pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 1.5)
-    pdf.cell(W * 0.55, 5, "Kidney Fibrosis Grader", ln=0)
+    pdf.cell(W * 0.55, 5, "Kidney Fibrosis Grader", new_x=XPos.RIGHT, new_y=YPos.TOP)
     pdf.set_font("Helvetica", size=7)
     pdf.set_text_color(199, 218, 255)
     pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 6)
     pdf.cell(W - 8, 4,
              _latin1(f"Clinicopathological Observation  |  {_date.today().strftime('%B %d, %Y')}  |  ResNet-FPN  |  Llama 4 Scout Vision"),
-             ln=0)
+             new_x=XPos.RIGHT, new_y=YPos.TOP)
     y = pdf.t_margin + 14
 
     # ── Grade box (left) + probability bars (right) ───────────────────────────
@@ -912,22 +912,22 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
     pdf.set_font("Helvetica", size=6.5)
     pdf.set_text_color(*C_MID)
     pdf.set_xy(pdf.l_margin + 5, y + 2.5)
-    pdf.cell(col_l, 3.5, "CONSENSUS GRADE", ln=0)
+    pdf.cell(col_l, 3.5, "CONSENSUS GRADE", new_x=XPos.RIGHT, new_y=YPos.TOP)
 
     pdf.set_font("Helvetica", style="B", size=14)
     pdf.set_text_color(*gc)
     pdf.set_xy(pdf.l_margin + 5, y + 6)
-    pdf.cell(col_l, 8, _latin1(CLASS_NAMES[consensus_pred]), ln=0)
+    pdf.cell(col_l, 8, _latin1(CLASS_NAMES[consensus_pred]), new_x=XPos.RIGHT, new_y=YPos.TOP)
 
     pdf.set_font("Helvetica", size=8)
     pdf.set_text_color(*C_DARK)
     pdf.set_xy(pdf.l_margin + 5, y + 14.5)
-    pdf.cell(col_l, 4.5, _latin1(_html.unescape(CLASS_RANGE[consensus_pred])), ln=0)
+    pdf.cell(col_l, 4.5, _latin1(_html.unescape(CLASS_RANGE[consensus_pred])), new_x=XPos.RIGHT, new_y=YPos.TOP)
 
     pdf.set_font("Helvetica", size=7)
     pdf.set_text_color(*C_MID)
     pdf.set_xy(pdf.l_margin + 5, y + 20)
-    pdf.cell(col_l, 4, f"Confidence: {consensus_conf:.1f}%", ln=0)
+    pdf.cell(col_l, 4, f"Confidence: {consensus_conf:.1f}%", new_x=XPos.RIGHT, new_y=YPos.TOP)
 
     # Right probability bars
     rx = pdf.l_margin + col_l + 5
@@ -935,7 +935,7 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
     pdf.set_font("Helvetica", style="B", size=6.5)
     pdf.set_text_color(*C_MID)
     pdf.set_xy(rx, ry)
-    pdf.cell(col_r, 4, "PROBABILITY BREAKDOWN", ln=0)
+    pdf.cell(col_r, 4, "PROBABILITY BREAKDOWN", new_x=XPos.RIGHT, new_y=YPos.TOP)
     ry += 4.5
     bar_h = 5
     for i in range(4):
@@ -950,7 +950,7 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
         pdf.set_text_color(*C_BLACK)
         pdf.set_xy(rx + 1, ry + 0.5)
         pdf.cell(col_r - 2, bar_h - 0.5,
-                 _latin1(f"{CLASS_SHORT[i]}   {pct:.1f}%"), ln=0, align="L")
+                 _latin1(f"{CLASS_SHORT[i]}   {pct:.1f}%"), new_x=XPos.RIGHT, new_y=YPos.TOP, align="L")
         ry += bar_h + 1
 
     y += box_h + 4
@@ -969,7 +969,7 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
         pdf.set_font("Helvetica", style="B", size=6.5)
         pdf.set_text_color(80, 70, 200)
         pdf.set_xy(pdf.l_margin + 5, y + 2)
-        pdf.cell(W - 10, 3.5, "IF (IMMUNOFLUORESCENCE) DIAGNOSIS", ln=0)
+        pdf.cell(W - 10, 3.5, "IF (IMMUNOFLUORESCENCE) DIAGNOSIS", new_x=XPos.RIGHT, new_y=YPos.TOP)
 
         pdf.set_font("Helvetica", size=7)
         pdf.set_text_color(*C_DARK)
@@ -977,14 +977,14 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
         for rank_i, pred in enumerate(if_top):
             pdf.set_xy(pdf.l_margin + 5, iy)
             label = _latin1(f"#{rank_i+1}  {pred['display']}  —  {pred['pct']:.1f}%")
-            pdf.cell(W - 10, 4, label, ln=0)
+            pdf.cell(W - 10, 4, label, new_x=XPos.RIGHT, new_y=YPos.TOP)
             iy += 4.5
 
         if if_result.get("channels_used"):
             pdf.set_font("Helvetica", size=6)
             pdf.set_text_color(*C_MID)
             pdf.set_xy(pdf.l_margin + 5, iy - 1)
-            pdf.cell(W - 10, 3.5, _latin1("Channels: " + ", ".join(if_result["channels_used"])), ln=0)
+            pdf.cell(W - 10, 3.5, _latin1("Channels: " + ", ".join(if_result["channels_used"])), new_x=XPos.RIGHT, new_y=YPos.TOP)
 
         y += if_h + 3
 
@@ -998,7 +998,7 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
     pdf.set_font("Helvetica", style="B", size=8)
     pdf.set_text_color(*C_DARK)
     pdf.set_xy(pdf.l_margin, y)
-    pdf.cell(W, 5, "Biopsy Images & Grad-CAM Overlays", ln=0)
+    pdf.cell(W, 5, "Biopsy Images & Grad-CAM Overlays", new_x=XPos.RIGHT, new_y=YPos.TOP)
     y += 6
 
     # ── Image grid ────────────────────────────────────────────────────────────
@@ -1024,7 +1024,7 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
             pdf.set_text_color(*C_MID)
             pdf.set_xy(x_pair, y)
             lbl = _latin1(f"Img {i+1} -- {CLASS_NAMES[all_preds[i]]} ({all_probs[i][all_preds[i]]*100:.0f}%)")
-            pdf.cell(pair_w, 4, lbl, ln=0, align="C")
+            pdf.cell(pair_w, 4, lbl, new_x=XPos.RIGHT, new_y=YPos.TOP, align="C")
 
             orig_bytes = _pil_to_jpeg_bytes(orig)
             pdf.image(io.BytesIO(orig_bytes), x=x_pair, y=y + 4, w=img_w, h=img_h)
@@ -1037,10 +1037,10 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
             pdf.set_font("Helvetica", size=5.5)
             pdf.set_text_color(*C_LIGHT)
             pdf.set_xy(x_pair, y + 4 + img_h + 0.5)
-            pdf.cell(img_w, 3, "Original", ln=0, align="C")
+            pdf.cell(img_w, 3, "Original", new_x=XPos.RIGHT, new_y=YPos.TOP, align="C")
             if overlay is not None:
                 pdf.set_xy(x_pair + img_w + 2, y + 4 + img_h + 0.5)
-                pdf.cell(img_w, 3, "Grad-CAM", ln=0, align="C")
+                pdf.cell(img_w, 3, "Grad-CAM", new_x=XPos.RIGHT, new_y=YPos.TOP, align="C")
     else:
         img_w = (avail_w - (n - 1) * 3) / max(n, 1)
         img_h = min(img_w * 1.1, avail_h - 8)
@@ -1049,7 +1049,7 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
             pdf.set_font("Helvetica", size=6)
             pdf.set_text_color(*C_MID)
             pdf.set_xy(x, y)
-            pdf.cell(img_w, 4, _latin1(f"Img {i+1}"), ln=0, align="C")
+            pdf.cell(img_w, 4, _latin1(f"Img {i+1}"), new_x=XPos.RIGHT, new_y=YPos.TOP, align="C")
             orig_bytes = _pil_to_jpeg_bytes(orig)
             pdf.image(io.BytesIO(orig_bytes), x=x, y=y + 4, w=img_w, h=img_h)
 
@@ -1062,7 +1062,7 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
     pdf.set_xy(pdf.l_margin, pdf.h - 8)
     pdf.cell(W, 4,
              "For research use only. Not validated for clinical diagnosis. Always consult a qualified pathologist.",
-             ln=0, align="C")
+             new_x=XPos.RIGHT, new_y=YPos.TOP, align="C")
 
     # ══════════════════════════════════════════════════════════════════════════
     # PAGE 2 — AI Report text
@@ -1075,7 +1075,7 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
     pdf.set_font("Helvetica", style="B", size=10)
     pdf.set_text_color(255, 255, 255)
     pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 1.5)
-    pdf.cell(W, 6, "AI Clinicopathological Observation", ln=0)
+    pdf.cell(W, 6, "AI Clinicopathological Observation", new_x=XPos.RIGHT, new_y=YPos.TOP)
     pdf.set_xy(pdf.l_margin, pdf.t_margin + 12)
 
     # Body text — stop before footer
@@ -1116,7 +1116,7 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
     pdf.set_xy(pdf.l_margin, pdf.h - 8)
     pdf.cell(W, 4,
              "For research use only. Not validated for clinical diagnosis. Always consult a qualified pathologist.",
-             ln=0, align="C")
+             new_x=XPos.RIGHT, new_y=YPos.TOP, align="C")
 
     return bytes(pdf.output())
 
@@ -1191,12 +1191,12 @@ with tab1:
                 st.session_state.all_preds = None
 
             if len(imgs) == 1:
-                st.image(imgs[0], use_column_width=True)
+                st.image(imgs[0], use_container_width=True)
             else:
                 thumb_cols = st.columns(len(imgs))
                 for i, (tc, im) in enumerate(zip(thumb_cols, imgs)):
                     with tc:
-                        st.image(im, use_column_width=True, caption=f"Image {i+1}")
+                        st.image(im, use_container_width=True, caption=f"Image {i+1}")
         else:
             st.session_state.imgs      = None
             st.session_state.all_probs = None
@@ -1364,7 +1364,7 @@ with tab1:
                 if f:
                     img = Image.open(f).convert("RGB")
                     channel_files[ch] = img
-                    st.image(img, use_column_width=True)
+                    st.image(img, use_container_width=True)
 
         # Persist channel images to session state; clear cached IF result if channels change.
         # A tiny thumbnail fingerprint is used as a stable, content-based cache key for the
@@ -1523,11 +1523,11 @@ with tab2:
                     if len(st.session_state.imgs) > 1
                     else "Analyzed biopsy image"
                 )
-                st.image(im, use_column_width=True, caption=caption)
+                st.image(im, use_container_width=True, caption=caption)
                 # Show Grad-CAM overlay if available from the cached report
                 overlays = st.session_state.get("report_overlays")
                 if overlays and i < len(overlays) and overlays[i] is not None:
-                    st.image(overlays[i], use_column_width=True,
+                    st.image(overlays[i], use_container_width=True,
                              caption=f"Grad-CAM{' (Image ' + str(i+1) + ')' if len(st.session_state.imgs) > 1 else ''}")
 
             # Show IF channel images if available
@@ -1537,7 +1537,7 @@ with tab2:
                             unsafe_allow_html=True)
                 for ch in IF_CHANNELS:
                     if ch in _if_imgs:
-                        st.image(_if_imgs[ch], use_column_width=True, caption=ch)
+                        st.image(_if_imgs[ch], use_container_width=True, caption=ch)
 
         with rcol2:
             # Only call the LLM (and rebuild the PDF) when images have changed
@@ -1706,13 +1706,13 @@ with tab3:
         g1, g2, g3 = st.columns(3, gap="medium")
         with g1:
             st.markdown('<div class="norm-panel-label">Original Image</div>', unsafe_allow_html=True)
-            st.image(selected_img, use_column_width=True)
+            st.image(selected_img, use_container_width=True)
         with g2:
             st.markdown('<div class="norm-panel-label">Grad-CAM Heatmap</div>', unsafe_allow_html=True)
-            st.image(heatmap_rgb, use_column_width=True)
+            st.image(heatmap_rgb, use_container_width=True)
         with g3:
             st.markdown('<div class="norm-panel-label">Overlay</div>', unsafe_allow_html=True)
-            st.image(overlay_np, use_column_width=True)
+            st.image(overlay_np, use_container_width=True)
 
     else:
         st.markdown("""
@@ -1797,7 +1797,7 @@ with tab3:
                             f'<div class="norm-panel-label">{_ch} — Grad-CAM Overlay</div>',
                             unsafe_allow_html=True,
                         )
-                        st.image(_if_overlays[_ch], use_column_width=True)
+                        st.image(_if_overlays[_ch], use_container_width=True)
 
         else:
             st.markdown("""
@@ -1856,7 +1856,7 @@ with tab4:
             sn_source = src_opts[src_choice]
 
         if sn_source:
-            st.image(sn_source, use_column_width=True, caption="Source (original)")
+            st.image(sn_source, use_container_width=True, caption="Source (original)")
 
     with sn_right:
         st.markdown('<div class="sec-label">Reference Image (target stain)</div>', unsafe_allow_html=True)
@@ -1866,7 +1866,7 @@ with tab4:
         )
         sn_reference = Image.open(sn_ref_upload).convert("RGB") if sn_ref_upload else None
         if sn_reference:
-            st.image(sn_reference, use_column_width=True, caption="Reference (target lab)")
+            st.image(sn_reference, use_container_width=True, caption="Reference (target lab)")
 
     if sn_source and sn_reference:
         st.markdown("---")
@@ -1902,13 +1902,13 @@ with tab4:
             r1, r2, r3 = st.columns(3, gap="medium")
             with r1:
                 st.markdown('<div class="norm-panel-label">Source (Original)</div>', unsafe_allow_html=True)
-                st.image(sn_source, use_column_width=True)
+                st.image(sn_source, use_container_width=True)
             with r2:
                 st.markdown('<div class="norm-panel-label">Reference</div>', unsafe_allow_html=True)
-                st.image(sn_reference, use_column_width=True)
+                st.image(sn_reference, use_container_width=True)
             with r3:
                 st.markdown('<div class="norm-panel-label">Normalised Output</div>', unsafe_allow_html=True)
-                st.image(result_img, use_column_width=True)
+                st.image(result_img, use_container_width=True)
 
             st.markdown('<div class="sec-label" style="margin-top:20px;">Stain Statistics</div>', unsafe_allow_html=True)
             m1, m2, m3 = st.columns(3, gap="medium")
