@@ -296,9 +296,10 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Ordered fallback list for the full clinicopathological report (multimodal)
 REPORT_MODELS = [
-    "meta-llama/llama-4-maverick:free",
-    "meta-llama/llama-4-scout:free",
-    "google/gemma-4-31b-it:free",
+    "google/gemini-3.1-pro-preview:free",   # smartest free model right now
+    "meta-llama/llama-4-maverick:free",      # strong multimodal reasoning
+    "google/gemma-4-31b-it:free",            # good fallback
+    "meta-llama/llama-4-scout:free",         # last resort
 ]
 
 # Ordered fallback list for the IF panel safety review
