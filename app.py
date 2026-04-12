@@ -284,6 +284,8 @@ CLASS_BG     = ["#0f2318", "#231a08", "#231208", "#230e0e"]
 CLASS_BORDER = ["#1a4a2a", "#4a3510", "#4a2010", "#4a1010"]
 CLASS_SHORT  = ["Minimal (<10%)", "Mild (10–25%)", "Moderate (25–50%)", "Severe (>50%)"]
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+# Thumbnail size used to generate stable MD5 fingerprints for IF channel images
+_IF_HASH_THUMB_SIZE = (4, 4)
 
 
 # ── Model ──────────────────────────────────────────────────────────────────────
@@ -448,7 +450,7 @@ def compute_if_gradcam(channel_imgs: dict, target_class: int = None):
     """
     Grad-CAM on the IF classifier (ResNet-50, layer4).
     channel_imgs: {marker: PIL.Image} for uploaded channels.
-    Returns (overlays, pred_class, probs)
+    Returns (overlays, target_class, probs)
       overlays: {marker: PIL.Image with Grad-CAM overlay} for every uploaded channel.
     """
     if_model_obj = load_if_model()
@@ -499,8 +501,10 @@ def compute_if_gradcam(channel_imgs: dict, target_class: int = None):
     bh = target_layer.register_full_backward_hook(_save_grad)
 
     try:
+        # No optimizer is used here; zeroing gradients directly on the model
+        # is the standard Grad-CAM pattern when working outside a training loop.
         model.zero_grad()
-        t_g    = torch.from_numpy(stack).unsqueeze(0).to(device)
+        t_g      = torch.from_numpy(stack).unsqueeze(0).to(device)
         logits_g = model(t_g)
         logits_g[0, target_class].backward()
 
@@ -705,6 +709,13 @@ def get_unified_report(images, all_probs, all_preds, avg_probs, consensus_pred, 
             f"Grad-CAM overlays highlight regions driving the IF classification.\n"
         )
 
+    # Resolve fallback for the generic diagnosis label in the critical instruction
+    _critical_diagnosis_label = (
+        top_preds[0]['display']
+        if has_if and if_result and if_result.get('top_predictions')
+        else 'nephropathy'
+    )
+
     prompt = f"""You are an expert nephropathologist reviewing a kidney biopsy with both \
 Masson's trichrome staining (for interstitial fibrosis grading) and immunofluorescence (IF) staining.
 
@@ -725,7 +736,7 @@ You are provided with:
 {if_channel_note}
 CRITICAL INSTRUCTION: Every sentence must be anchored to a specific visual feature you actually \
 observe in the images provided. Do not write generic statements that would be true of any \
-{CLASS_NAMES[consensus_pred]} biopsy or any {top_preds[0]['display'] if has_if and if_result and if_result.get('top_predictions') else 'nephropathy'} case.
+{CLASS_NAMES[consensus_pred]} biopsy or any {_critical_diagnosis_label} case.
 
 **Trichrome — Visual Observations**
 Describe the spatial distribution of collagen deposition — is it periglomerular, peritubular, \
@@ -1345,9 +1356,11 @@ with tab1:
                     channel_files[ch] = img
                     st.image(img, use_column_width=True)
 
-        # Persist channel images to session state; clear cached IF result if channels change
+        # Persist channel images to session state; clear cached IF result if channels change.
+        # A tiny thumbnail fingerprint is used as a stable, content-based cache key for the
+        # uploaded IF channels (avoids re-running the classifier when nothing has changed).
         _if_bytes = b"".join(
-            channel_files[ch].resize((4, 4)).tobytes()
+            channel_files[ch].resize(_IF_HASH_THUMB_SIZE).tobytes()
             for ch in IF_CHANNELS if ch in channel_files
         )
         _if_upload_key = hashlib.md5(_if_bytes).hexdigest() if _if_bytes else ""
@@ -1388,7 +1401,8 @@ with tab1:
                     with st.spinner("Classifying IF pattern..."):
                         res = if_model.predict(tmp_paths, top_k=3)
                     st.session_state["if_result"] = res
-                    # Also refresh report when IF results come in
+                    # Remove the cached report key so the Clinicopathological tab
+                    # regenerates the LLM report with the new IF diagnosis included.
                     st.session_state.pop("report_key", None)
                 except Exception as e:
                     st.error(f"Classification error: {str(e)}")
