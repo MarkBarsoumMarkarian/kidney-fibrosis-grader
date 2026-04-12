@@ -445,105 +445,6 @@ def compute_gradcam(img: Image.Image, target_class: int = None):
     return heatmap_rgb, overlay, target_class, probs, cam_resized
 
 
-# ── IF Grad-CAM ───────────────────────────────────────────────────────────────
-def compute_if_gradcam(channel_imgs: dict, target_class: int = None):
-    """
-    Per-channel Grad-CAM on the IF classifier (ResNet-50).
-
-    Uses input gradients (d logit / d input_channel) to produce a unique
-    spatial saliency map for every uploaded IF channel.  Because each input
-    channel's gradient is computed independently, the resulting heatmaps
-    genuinely differ across channels — e.g. IgG will highlight different
-    glomerular regions than C3 or kappa.
-
-    Colour semantics (JET colormap):
-      Dark-red  → regions that strongly drove the model's decision
-      Yellow/green → secondary contributing areas
-      Blue → regions the model largely ignored
-
-    channel_imgs: {marker: PIL.Image} for uploaded channels.
-    Returns (overlays, target_class, probs)
-      overlays: {marker: PIL.Image with per-channel Grad-CAM overlay}
-    """
-    if_model_obj = load_if_model()
-    if if_model_obj is None:
-        raise RuntimeError("IF classifier model not loaded.")
-
-    model  = if_model_obj.model
-    device = if_model_obj.device
-
-    # Build the 9-channel stack (mirrors IFClassifier._build_stack but from PIL Images)
-    planes = []
-    for ch in IF_CHANNELS:
-        if ch in channel_imgs:
-            arr = np.array(
-                channel_imgs[ch].convert("L").resize((224, 224), Image.BILINEAR),
-                dtype=np.float32,
-            ) / 255.0
-            nz = arr[arr > 0.05]
-            if len(nz) > 50:
-                arr = (arr - nz.mean()) / (nz.std() + 1e-6)
-            planes.append(arr)
-        else:
-            planes.append(np.zeros((224, 224), dtype=np.float32))
-
-    stack = np.stack(planes, axis=0)  # (9, 224, 224)
-
-    # First pass without grad to get probs / resolve target_class
-    with torch.no_grad():
-        t_ng   = torch.from_numpy(stack).unsqueeze(0).to(device)
-        logits = model(t_ng)
-        probs  = torch.softmax(logits, dim=1)[0].cpu().numpy()
-
-    if target_class is None:
-        target_class = int(np.argmax(probs))
-
-    # Compute per-channel input gradients in a single backward pass.
-    # d(logit[target_class]) / d(input[ch, :, :]) gives a unique (224, 224)
-    # saliency map for each input channel, reflecting that channel's spatial
-    # contribution to the predicted diagnosis.
-    model.zero_grad()
-    t_g = torch.from_numpy(stack).unsqueeze(0).to(device)
-    t_g.requires_grad_(True)
-    logits_g = model(t_g)
-    logits_g[0, target_class].backward()
-
-    if t_g.grad is None:
-        raise RuntimeError("IF Grad-CAM: input gradients did not flow.")
-
-    input_grads = t_g.grad[0].detach().cpu().numpy()  # (9, 224, 224)
-
-    # Build per-channel overlays using channel-specific gradient saliency maps
-    overlays = {}
-    for ch_idx, ch in enumerate(IF_CHANNELS):
-        if ch not in channel_imgs:
-            continue
-
-        # Absolute value keeps both excitatory and suppressive contributions,
-        # preventing an all-zero (all-blue) heatmap when gradients are all negative.
-        ch_grad = np.abs(input_grads[ch_idx])
-        g_min, g_max = ch_grad.min(), ch_grad.max()
-        if g_max > g_min:
-            ch_grad = (ch_grad - g_min) / (g_max - g_min)
-        else:
-            ch_grad = np.zeros_like(ch_grad)
-
-        pil_ch        = channel_imgs[ch]
-        orig_w, orig_h = pil_ch.size
-        grad_u8       = (ch_grad * 255).clip(0, 255).astype(np.uint8)
-        grad_resized  = np.array(
-            Image.fromarray(grad_u8).resize((orig_w, orig_h), Image.BICUBIC)
-        ).astype(np.float32) / 255.0
-        heatmap_u8    = (grad_resized * 255).astype(np.uint8)
-        heatmap_color = cv2.applyColorMap(heatmap_u8, cv2.COLORMAP_JET)
-        heatmap_rgb   = cv2.cvtColor(heatmap_color, cv2.COLOR_BGR2RGB)
-        orig_rgb      = np.array(pil_ch.convert("RGB"))
-        overlay       = cv2.addWeighted(orig_rgb, 0.55, heatmap_rgb, 0.45, 0)
-        overlays[ch]  = Image.fromarray(overlay)
-
-    return overlays, target_class, probs
-
-
 # ── IF Mosaic & OpenRouter LLM Review ────────────────────────────────────────
 
 _MOSAIC_CELL = 224   # px per cell
@@ -860,8 +761,7 @@ def get_unified_report(images, all_probs, all_preds, avg_probs, consensus_pred, 
         uploaded_chs = [ch for ch in IF_CHANNELS if ch in if_channel_imgs]
         if_channel_note = (
             f"\n3. IF channel images ({', '.join(uploaded_chs)}) — "
-            f"each image represents a single fluorescence channel. "
-            f"Grad-CAM overlays highlight regions driving the IF classification.\n"
+            f"each image represents a single fluorescence channel.\n"
         )
 
     # Resolve fallback for the generic diagnosis label in the critical instruction
@@ -903,8 +803,7 @@ zones, interstitium, vascular walls? Does that focus correlate with what you see
 {"**IF — Pattern Analysis**" if has_if else ""}
 {"Examine each uploaded IF channel image. Which markers show mesangial, capillary wall, or linear " if has_if else ""}
 {"tubular basement membrane positivity? Is the staining granular, linear, or diffuse? " if has_if else ""}
-{"Does the IF Grad-CAM overlay highlight the glomeruli, tubules, or both? " if has_if else ""}
-{"How does the observed IF pattern support or conflict with the top classifier prediction?" if has_if else ""}
+{"Does the IF pattern support or conflict with the top classifier prediction?" if has_if else ""}
 
 {"**Integrated Diagnosis**" if has_if else "**Diagnosis**"}
 {"Synthesise trichrome fibrosis grade with IF staining pattern. What single diagnosis best explains " if has_if else ""}
@@ -1927,20 +1826,6 @@ with tab2:
                             if_channel_imgs=st.session_state.get("if_channel_imgs"),
                         )
 
-                        # Auto-compute IF Grad-CAM for the PDF (per-channel heatmaps)
-                        _if_ch_imgs_pdf = st.session_state.get("if_channel_imgs")
-                        if_gradcam_overlays = None
-                        if _if_ch_imgs_pdf:
-                            try:
-                                _if_ov, _if_pc, _if_pb = compute_if_gradcam(
-                                    _if_ch_imgs_pdf, target_class=None
-                                )
-                                if_gradcam_overlays = _if_ov
-                                # Update Grad-CAM tab cache so user doesn't need to re-run
-                                st.session_state["if_gcam_cache"] = (_if_ov, _if_pc, _if_pb)
-                            except Exception:
-                                pass  # Grad-CAM unavailable; PDF falls back to originals
-
                         pdf_bytes = generate_pdf_report(
                             images=st.session_state.imgs,
                             overlay_images=overlay_images,
@@ -1952,7 +1837,7 @@ with tab2:
                             report_text=report,
                             if_result=st.session_state.get("if_result"),
                             if_channel_imgs=st.session_state.get("if_channel_imgs"),
-                            if_gradcam_overlays=if_gradcam_overlays,
+                            if_gradcam_overlays=None,
                         )
                         st.session_state.report_key      = _report_key
                         st.session_state.report_text     = report
@@ -2095,90 +1980,6 @@ with tab3:
     <div class="await-sub">Upload images in the Analysis tab first, or use the uploader above.</div>
 </div>""", unsafe_allow_html=True)
 
-    # ── IF Grad-CAM Section ────────────────────────────────────────────────────
-    _if_imgs_gcam = st.session_state.get("if_channel_imgs")
-    if _if_imgs_gcam:
-        st.markdown("""
-<div style="height:1px; background:linear-gradient(90deg,transparent,#1e2d45,transparent);
-            margin:32px 0;"></div>
-<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
-    <div style="font-family:'Playfair Display',serif; font-size:18px; font-weight:700; color:#e0e6f0;">
-        IF Grad-CAM Explainability
-    </div>
-    <div style="font-family:'IBM Plex Mono',monospace; font-size:9px; font-weight:500; letter-spacing:0.08em;
-                background:#1a1a2e; color:#818cf8; border:1px solid #3730a3; padding:4px 10px; border-radius:4px;">
-        ResNet-50 &nbsp;·&nbsp; 9-CHANNEL IF
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-        st.markdown("""
-<div class="info-box">
-    <strong>IF Grad-CAM:</strong> Grad-CAM is computed on the ResNet-50 IF classifier (layer4).
-    The resulting spatial activation map is overlaid on each uploaded IF channel image, showing
-    which glomerular or tubular regions drove the predicted diagnosis.
-    <br><br>
-    <strong>Colour scale:</strong>
-    <span style="color:#4466ff;">Blue</span> = low attention &nbsp;|&nbsp;
-    <span style="color:#00cc88;">Green</span> = moderate &nbsp;|&nbsp;
-    <span style="color:#ffbb00;">Yellow</span> = high &nbsp;|&nbsp;
-    <span style="color:#ff3333;">Red</span> = peak discriminative region.
-</div>
-""", unsafe_allow_html=True)
-
-        run_if_gcam_btn = st.button(
-            "▶  Compute IF Grad-CAM",
-            use_container_width=False,
-            key="if_gcam_run_btn",
-        )
-
-        if run_if_gcam_btn:
-            with st.spinner("Computing IF Grad-CAM..."):
-                try:
-                    _if_overlays, _if_pred_cls, _if_probs = compute_if_gradcam(
-                        _if_imgs_gcam, target_class=None
-                    )
-                    st.session_state["if_gcam_cache"] = (_if_overlays, _if_pred_cls, _if_probs)
-                except Exception as _eg:
-                    st.error(f"IF Grad-CAM error: {str(_eg)}")
-
-        if "if_gcam_cache" in st.session_state:
-            _if_overlays, _if_pred_cls, _if_probs = st.session_state["if_gcam_cache"]
-
-            # Resolve predicted class display name
-            _if_model_obj   = load_if_model()
-            _if_class_name  = (_if_model_obj.classes[_if_pred_cls]
-                               if _if_model_obj is not None else str(_if_pred_cls))
-            _if_disp_name   = IF_CLASS_DISPLAY.get(_if_class_name, _if_class_name)
-            _if_conf        = float(_if_probs[_if_pred_cls]) * 100
-
-            st.markdown(
-                f'<div class="info-box" style="border-left-color:#818cf8; margin-top:8px;">'
-                f'IF classifier predicted: <strong style="color:#818cf8;">{_if_disp_name}</strong>'
-                f' &nbsp;·&nbsp; confidence <strong style="color:#818cf8;">{_if_conf:.1f}%</strong>'
-                f'<br>Activation maps below highlight regions that most influenced this diagnosis.</div>',
-                unsafe_allow_html=True,
-            )
-
-            uploaded_chs = [ch for ch in IF_CHANNELS if ch in _if_overlays]
-            # Lay out overlays in rows of 3
-            for row_start in range(0, len(uploaded_chs), 3):
-                row_chs = uploaded_chs[row_start:row_start + 3]
-                _gcols  = st.columns(len(row_chs), gap="medium")
-                for _gc, _ch in zip(_gcols, row_chs):
-                    with _gc:
-                        st.markdown(
-                            f'<div class="norm-panel-label">{_ch} — Grad-CAM Overlay</div>',
-                            unsafe_allow_html=True,
-                        )
-                        st.image(_if_overlays[_ch], use_column_width=True)
-
-        else:
-            st.markdown("""
-<div class="await-wrap" style="margin-top:8px;">
-    <div class="await-label">IF Grad-CAM Not Yet Run</div>
-    <div class="await-sub">Click "Compute IF Grad-CAM" above to generate activation maps for your IF channels.</div>
-</div>""", unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
