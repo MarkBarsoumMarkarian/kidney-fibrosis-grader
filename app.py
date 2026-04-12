@@ -811,7 +811,31 @@ If vascular changes are prominent, address that. {"If IF positivity suggests an 
     }
     response = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=90)
     response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
+    raw = response.json()["choices"][0]["message"]["content"]
+    return _clean_report_text(raw)
+
+
+def _clean_report_text(text: str) -> str:
+    """Remove em dashes, en dashes, and markdown # headers from LLM report text.
+
+    Em dashes (—) and en dashes (–) are replaced with a plain hyphen-minus.
+    Lines beginning with one or more '#' characters (Markdown headings) have
+    the leading '#' symbols stripped so the text is rendered as plain prose
+    or as the **bold** heading style used elsewhere in the report.
+    """
+    # Replace em dash and en dash with a plain hyphen
+    text = text.replace("\u2014", "-").replace("\u2013", "-")
+    # Replace triple/double dashes that LLMs sometimes emit
+    text = re.sub(r"---+", "-", text)
+
+    # Strip leading '#' heading markers from each line, keeping the heading text.
+    # e.g. "## Findings" → "**Findings**" so it still renders as a bold header.
+    def _strip_hashes(m):
+        return f"**{m.group(1).strip()}**"
+
+    text = re.sub(r"^#{1,6}\s+(.*)", _strip_hashes, text, flags=re.MULTILINE)
+
+    return text
 
 
 # ── PDF Report Generation ──────────────────────────────────────────────────────
