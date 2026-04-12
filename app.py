@@ -519,8 +519,9 @@ def compute_if_gradcam(channel_imgs: dict, target_class: int = None):
         if ch not in channel_imgs:
             continue
 
-        # ReLU keeps only positive contributions, then normalise to [0, 1]
-        ch_grad = np.maximum(input_grads[ch_idx], 0)
+        # Absolute value keeps both excitatory and suppressive contributions,
+        # preventing an all-zero (all-blue) heatmap when gradients are all negative.
+        ch_grad = np.abs(input_grads[ch_idx])
         g_min, g_max = ch_grad.min(), ch_grad.max()
         if g_max > g_min:
             ch_grad = (ch_grad - g_min) / (g_max - g_min)
