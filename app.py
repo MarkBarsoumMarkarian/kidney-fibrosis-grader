@@ -800,8 +800,7 @@ If vascular changes are prominent, address that. {"If IF positivity suggests an 
 
     # Trichrome images + Grad-CAM overlays (highest priority)
     for i, img in enumerate(images):
-        if not _add_image(img, quality=85):
-            break
+        _add_image(img, quality=85)
         if overlay_images and i < len(overlay_images) and overlay_images[i] is not None:
             _add_image(overlay_images[i], quality=85)
 
