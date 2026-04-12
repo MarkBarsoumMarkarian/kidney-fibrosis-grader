@@ -841,7 +841,7 @@ def _latin1(text: str) -> str:
 
 def generate_pdf_report(images, overlay_images, all_probs, all_preds,
                         avg_probs, consensus_pred, consensus_conf, report_text,
-                        if_result=None):
+                        if_result=None, if_channel_imgs=None):
     from fpdf import FPDF
     from datetime import date as _date
     import html as _html
@@ -1107,6 +1107,70 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
     pdf.cell(W, 4,
              "For research use only. Not validated for clinical diagnosis. Always consult a qualified pathologist.",
              ln=0, align="C")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PAGE 3 — IF Channel Images (if available)
+    # ══════════════════════════════════════════════════════════════════════════
+    if if_channel_imgs:
+        uploaded_chs = [ch for ch in IF_CHANNELS if ch in if_channel_imgs]
+        if uploaded_chs:
+            pdf.add_page()
+
+            # Header bar
+            pdf.set_fill_color(*C_ACCENT)
+            pdf.rect(pdf.l_margin, pdf.t_margin, W, 9, style="F")
+            pdf.set_font("Helvetica", style="B", size=10)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 1.5)
+            pdf.cell(W, 6, "IF Channel Images", ln=0)
+
+            y_if = pdf.t_margin + 13
+
+            # Lay out images in a grid: up to 3 columns
+            cols = min(3, len(uploaded_chs))
+            cell_w = (W - (cols - 1) * 3) / cols
+            cell_h = cell_w * 0.9
+            col_idx = 0
+
+            for ch in uploaded_chs:
+                # Start of a new row: check if there's enough space, else new page
+                if col_idx == 0 and y_if + cell_h + 8 > pdf.h - 12:
+                    pdf.add_page()
+                    pdf.set_fill_color(*C_ACCENT)
+                    pdf.rect(pdf.l_margin, pdf.t_margin, W, 9, style="F")
+                    pdf.set_font("Helvetica", style="B", size=10)
+                    pdf.set_text_color(255, 255, 255)
+                    pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 1.5)
+                    pdf.cell(W, 6, "IF Channel Images (continued)", ln=0)
+                    y_if = pdf.t_margin + 13
+
+                x_cell = pdf.l_margin + col_idx * (cell_w + 3)
+
+                # Caption
+                pdf.set_font("Helvetica", size=6.5)
+                pdf.set_text_color(*C_MID)
+                pdf.set_xy(x_cell, y_if)
+                pdf.cell(cell_w, 4, _latin1(ch), ln=0, align="C")
+
+                # Image
+                ch_bytes = _pil_to_jpeg_bytes(if_channel_imgs[ch])
+                pdf.image(io.BytesIO(ch_bytes), x=x_cell, y=y_if + 4, w=cell_w, h=cell_h)
+
+                col_idx += 1
+                if col_idx >= cols:
+                    col_idx = 0
+                    y_if += cell_h + 8
+
+            # Footer on IF page
+            pdf.set_draw_color(*C_BORDER)
+            pdf.set_line_width(0.2)
+            pdf.line(pdf.l_margin, pdf.h - 9, pdf.l_margin + W, pdf.h - 9)
+            pdf.set_font("Helvetica", size=5.5)
+            pdf.set_text_color(*C_LIGHT)
+            pdf.set_xy(pdf.l_margin, pdf.h - 8)
+            pdf.cell(W, 4,
+                     "For research use only. Not validated for clinical diagnosis. Always consult a qualified pathologist.",
+                     ln=0, align="C")
 
     return bytes(pdf.output())
 
@@ -1565,6 +1629,7 @@ with tab2:
                             consensus_conf=consensus_conf,
                             report_text=report,
                             if_result=st.session_state.get("if_result"),
+                            if_channel_imgs=st.session_state.get("if_channel_imgs"),
                         )
                         st.session_state.report_key      = _report_key
                         st.session_state.report_text     = report
