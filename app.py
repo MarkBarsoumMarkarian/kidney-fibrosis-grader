@@ -11,6 +11,7 @@ import base64
 import io
 import cv2
 import hashlib
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from utils.model_builder import model as build_model
@@ -21,6 +22,14 @@ if not os.path.exists(MODEL_PATH):
     print('Downloading model weights...')
     gdown.download('https://drive.google.com/uc?id=1KvJQ0YKL-I96UJ5zUGLR_Qpd4R0ach5t', MODEL_PATH, quiet=False)
     print('Done.')
+
+IF_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'if_classifier_best.pth')
+if not os.path.exists(IF_MODEL_PATH):
+    print('Downloading IF classifier weights...')
+    gdown.download('https://drive.google.com/uc?id=1JVGcgp8cxc5ZSnHGXTCX9Ez2fI3MEk9R', IF_MODEL_PATH, quiet=False)
+    print('Done.')
+
+from inference import IFClassifier, IF_CHANNELS, CLASS_DISPLAY as IF_CLASS_DISPLAY
 
 st.set_page_config(
     page_title="Kidney Fibrosis Grader",
@@ -275,6 +284,13 @@ def load_model():
     net, _ = build_model(N_CLASS, mode=MODE, evaluation=True, path_g=MODEL_PATH)
     net.eval()
     return net
+
+
+@st.cache_resource
+def load_if_model():
+    if not os.path.exists(IF_MODEL_PATH):
+        return None
+    return IFClassifier(IF_MODEL_PATH)
 
 
 transform = transforms.Compose([
@@ -902,11 +918,12 @@ for key in ["imgs", "all_probs", "all_preds"]:
 
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Analysis",
     "Clinicopathological Observation",
     "Grad-CAM Explainability",
     "Stain Normalisation",
+    "IF Diagnosis",
 ])
 
 
@@ -1479,6 +1496,160 @@ with tab4:
     <div class="await-label">Upload Images to Begin</div>
     <div class="await-sub">Provide a source biopsy to normalise and a reference image from the target lab.<br>
     The tool will transfer the reference stain profile and compare grade predictions before and after.</div>
+</div>""", unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 5 — IF DIAGNOSIS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab5:
+    st.markdown("""
+<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+    <div style="font-family:'Playfair Display',serif; font-size:18px; font-weight:700; color:#e0e6f0;">
+        Immunofluorescence Diagnosis
+    </div>
+    <div style="font-family:'IBM Plex Mono',monospace; font-size:9px; font-weight:500; letter-spacing:0.08em;
+                background:#1a1a2e; color:#818cf8; border:1px solid #3730a3; padding:4px 10px; border-radius:4px;">
+        ResNet-50 &nbsp;·&nbsp; 9-CHANNEL IF
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+    st.markdown("""
+<div class="info-box">
+    <strong>How to use:</strong> Upload any combination of the 9 IF channel images below.
+    Missing channels are zero-filled automatically — more channels yield higher confidence.
+    Recommend uploading ≥ 3 channels for reliable results.
+    The model returns the top-3 most likely nephropathological diagnoses.
+</div>
+""", unsafe_allow_html=True)
+
+    if_left, if_right = st.columns([2.5, 1.5], gap="large")
+
+    _IF_CHANNEL_KEYS = ['IgG', 'IgA', 'IgM', 'C3', 'C1q', 'kappa', 'lambda', 'fibrinogen', 'albumin']
+
+    with if_left:
+        st.markdown('<div class="sec-label">Upload IF Images by Channel</div>', unsafe_allow_html=True)
+        row1_cols = st.columns(3, gap="small")
+        row2_cols = st.columns(3, gap="small")
+        row3_cols = st.columns(3, gap="small")
+        all_rows = [row1_cols, row2_cols, row3_cols]
+
+        channel_files = {}
+        for idx, ch in enumerate(_IF_CHANNEL_KEYS):
+            row_idx = idx // 3
+            col_idx = idx % 3
+            with all_rows[row_idx][col_idx]:
+                st.markdown(
+                    f'<div class="norm-panel-label">{ch}</div>',
+                    unsafe_allow_html=True,
+                )
+                f = st.file_uploader(
+                    ch,
+                    type=["jpg", "jpeg", "png"],
+                    key=f"if_ch_{ch}",
+                    label_visibility="collapsed",
+                )
+                if f:
+                    img = Image.open(f).convert("RGB")
+                    channel_files[ch] = img
+                    st.image(img, use_column_width=True)
+
+    with if_right:
+        n_uploaded = len(channel_files)
+        st.markdown(
+            f'<div class="sec-label">{n_uploaded}/9 Channels Uploaded</div>',
+            unsafe_allow_html=True,
+        )
+
+        run_if_btn = st.button(
+            "▶  Run IF Classifier",
+            use_container_width=True,
+            key="if_run_btn",
+            disabled=(n_uploaded == 0),
+        )
+
+        if run_if_btn and channel_files:
+            if_model = load_if_model()
+            if if_model is None:
+                st.error("IF classifier model not loaded. Check checkpoint path.")
+            else:
+                tmp_paths = {}
+                tmp_to_delete = []
+                for ch, img in channel_files.items():
+                    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
+                        img.save(tf.name)
+                        tmp_paths[ch] = tf.name
+                        tmp_to_delete.append(tf.name)
+                try:
+                    with st.spinner("Classifying IF pattern..."):
+                        res = if_model.predict(tmp_paths, top_k=3)
+                    st.session_state["if_result"] = res
+                except Exception as e:
+                    st.error(f"Classification error: {str(e)}")
+                finally:
+                    for p in tmp_to_delete:
+                        try:
+                            os.unlink(p)
+                        except OSError:
+                            pass
+
+        if "if_result" in st.session_state:
+            res = st.session_state["if_result"]
+
+            if res.get("warning"):
+                st.markdown(
+                    f'<div class="info-box" style="border-left-color:#f59e0b;">⚠️ {res["warning"]}</div>',
+                    unsafe_allow_html=True,
+                )
+
+            st.markdown(
+                '<div class="sec-label" style="margin-top:12px;">Top Diagnoses</div>',
+                unsafe_allow_html=True,
+            )
+
+            medals = ["🥇", "🥈", "🥉"]
+            diag_colors = ["#818cf8", "#a78bfa", "#c4b5fd"]
+
+            for i, pred in enumerate(res["top_predictions"]):
+                pct   = pred["pct"]
+                color = diag_colors[i]
+                st.markdown(f"""
+<div class="card" style="padding:14px 16px; margin-bottom:10px;">
+    <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#4a5880; margin-bottom:4px;">
+        {medals[i]} RANK {i + 1}
+    </div>
+    <div style="font-size:14px; font-weight:700; color:{color}; margin-bottom:8px;">
+        {pred["display"]}
+    </div>
+    <div class="prob-track" style="margin-bottom:4px;">
+        <div class="prob-fill" style="width:{pct:.1f}%; background:{color};"></div>
+    </div>
+    <div style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:#7a8aaa;">
+        {pct:.1f}%
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+            used    = res["channels_used"]
+            missing = res["channels_missing"]
+            st.markdown(
+                f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:10px; '
+                f'color:#3d5070; margin-top:8px;">Channels used: {", ".join(used)}</div>',
+                unsafe_allow_html=True,
+            )
+            if missing:
+                st.markdown(
+                    f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:10px; '
+                    f'color:#2a3a56; margin-top:4px;">Zero-filled: {", ".join(missing)}</div>',
+                    unsafe_allow_html=True,
+                )
+
+        elif n_uploaded == 0:
+            st.markdown("""
+<div class="await-wrap">
+    <div class="await-label">No Images Uploaded</div>
+    <div class="await-sub">Upload at least one IF channel image to run the classifier.</div>
 </div>""", unsafe_allow_html=True)
 
 
