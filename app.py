@@ -807,6 +807,8 @@ def get_unified_report(images, all_probs, all_preds, avg_probs, consensus_pred, 
         except Exception:
             pass
     if not groq_key:
+        groq_key = st.session_state.get("groq_api_key_input", "")
+    if not groq_key:
         raise ValueError("GROQ_API_KEY not configured.")
 
     n = len(images)
@@ -1860,8 +1862,44 @@ with tab2:
                         st.image(_if_imgs[ch], use_column_width=True, caption=ch)
 
         with rcol2:
+            # Show API key input if GROQ_API_KEY is not configured server-side
+            def _groq_key_from_secrets():
+                try:
+                    return st.secrets.get("GROQ_API_KEY", "")
+                except Exception:
+                    return ""
+
+            _groq_configured = bool(
+                os.environ.get("GROQ_API_KEY", "") or _groq_key_from_secrets()
+            )
+            if not _groq_configured:
+                _user_key = st.text_input(
+                    "Groq API Key",
+                    value=st.session_state.get("groq_api_key_input", ""),
+                    type="password",
+                    placeholder="gsk_...",
+                    help="Enter your Groq API key to generate the AI report. Get a free key at console.groq.com",
+                    key="groq_api_key_widget",
+                )
+                if _user_key:
+                    st.session_state["groq_api_key_input"] = _user_key
+                    # Invalidate cached report so it regenerates with the new key
+                    if st.session_state.get("groq_key_used") != _user_key:
+                        st.session_state.pop("report_key", None)
+                    st.session_state["groq_key_used"] = _user_key
+                elif not st.session_state.get("groq_api_key_input"):
+                    st.info(
+                        "Enter your [Groq API key](https://console.groq.com) above to generate the "
+                        "AI clinicopathological report. A free key is available at console.groq.com."
+                    )
+
             # Only call the LLM (and rebuild the PDF) when images have changed
-            if st.session_state.get("report_key") != _report_key:
+            _has_key = bool(
+                os.environ.get("GROQ_API_KEY", "")
+                or st.session_state.get("groq_api_key_input", "")
+                or _groq_key_from_secrets()
+            )
+            if _has_key and st.session_state.get("report_key") != _report_key:
                 with st.spinner("Generating Clinicopathological Observation..."):
                     try:
                         # Compute Grad-CAM overlays for all images to pass to the LLM
@@ -1919,7 +1957,9 @@ with tab2:
                         st.session_state.report_pdf      = pdf_bytes
                     except requests.exceptions.HTTPError as e:
                         if e.response.status_code == 401:
-                            st.error("Groq API key missing. Add GROQ_API_KEY to Streamlit secrets.")
+                            st.session_state.pop("groq_api_key_input", None)
+                            st.session_state.pop("groq_key_used", None)
+                            st.error("Invalid Groq API key. Please check your key and try again.")
                         elif e.response.status_code == 429:
                             st.warning("Rate limit reached. Please wait a moment and retry.")
                         else:
