@@ -443,6 +443,106 @@ def compute_gradcam(img: Image.Image, target_class: int = None):
     return heatmap_rgb, overlay, target_class, probs, cam_resized
 
 
+# ── IF Grad-CAM ───────────────────────────────────────────────────────────────
+def compute_if_gradcam(channel_imgs: dict, target_class: int = None):
+    """
+    Grad-CAM on the IF classifier (ResNet-50, layer4).
+    channel_imgs: {marker: PIL.Image} for uploaded channels.
+    Returns (overlays, pred_class, probs)
+      overlays: {marker: PIL.Image with Grad-CAM overlay} for every uploaded channel.
+    """
+    if_model_obj = load_if_model()
+    if if_model_obj is None:
+        raise RuntimeError("IF classifier model not loaded.")
+
+    model  = if_model_obj.model
+    device = if_model_obj.device
+
+    # Build the 9-channel stack (mirrors IFClassifier._build_stack but from PIL Images)
+    planes = []
+    for ch in IF_CHANNELS:
+        if ch in channel_imgs:
+            arr = np.array(
+                channel_imgs[ch].convert("L").resize((224, 224), Image.BILINEAR),
+                dtype=np.float32,
+            ) / 255.0
+            nz = arr[arr > 0.05]
+            if len(nz) > 50:
+                arr = (arr - nz.mean()) / (nz.std() + 1e-6)
+            planes.append(arr)
+        else:
+            planes.append(np.zeros((224, 224), dtype=np.float32))
+
+    stack = np.stack(planes, axis=0)  # (9, 224, 224)
+
+    # First pass without grad to get probs / resolve target_class
+    with torch.no_grad():
+        t_ng    = torch.from_numpy(stack).unsqueeze(0).to(device)
+        logits  = model(t_ng)
+        probs   = torch.softmax(logits, dim=1)[0].cpu().numpy()
+
+    if target_class is None:
+        target_class = int(np.argmax(probs))
+
+    # Hook into layer4
+    _act  = {}
+    _grad = {}
+
+    def _save_act(m, inp, out):
+        _act['v'] = out.detach()
+
+    def _save_grad(m, gin, gout):
+        _grad['v'] = gout[0].detach()
+
+    target_layer = model.layer4
+    fh = target_layer.register_forward_hook(_save_act)
+    bh = target_layer.register_full_backward_hook(_save_grad)
+
+    try:
+        model.zero_grad()
+        t_g    = torch.from_numpy(stack).unsqueeze(0).to(device)
+        logits_g = model(t_g)
+        logits_g[0, target_class].backward()
+
+        if 'v' not in _grad or 'v' not in _act:
+            raise RuntimeError("IF Grad-CAM hooks did not fire.")
+
+        weights = _grad['v'].mean(dim=[2, 3], keepdim=True)
+        cam     = (weights * _act['v']).sum(dim=1).squeeze(0)
+        cam     = F.relu(cam)
+
+        cam_min, cam_max = cam.min(), cam.max()
+        if cam_max > cam_min:
+            cam = (cam - cam_min) / (cam_max - cam_min)
+        else:
+            cam = torch.zeros_like(cam)
+
+        cam_np = cam.cpu().numpy()
+    finally:
+        fh.remove()
+        bh.remove()
+
+    # Build per-channel Grad-CAM overlays
+    overlays = {}
+    for ch in IF_CHANNELS:
+        if ch not in channel_imgs:
+            continue
+        pil_ch        = channel_imgs[ch]
+        orig_w, orig_h = pil_ch.size
+        cam_u8        = (cam_np * 255).clip(0, 255).astype(np.uint8)
+        cam_resized   = np.array(
+            Image.fromarray(cam_u8).resize((orig_w, orig_h), Image.BICUBIC)
+        ).astype(np.float32) / 255.0
+        heatmap_u8    = (cam_resized * 255).astype(np.uint8)
+        heatmap_color = cv2.applyColorMap(heatmap_u8, cv2.COLORMAP_JET)
+        heatmap_rgb   = cv2.cvtColor(heatmap_color, cv2.COLOR_BGR2RGB)
+        orig_rgb      = np.array(pil_ch.convert("RGB"))
+        overlay       = cv2.addWeighted(orig_rgb, 0.55, heatmap_rgb, 0.45, 0)
+        overlays[ch]  = Image.fromarray(overlay)
+
+    return overlays, target_class, probs
+
+
 # ── Stain Normalisation ────────────────────────────────────────────────────────
 def _get_od(img_np: np.ndarray):
     """Convert uint8 RGB image to optical density (OD) space."""
@@ -540,8 +640,12 @@ def compute_stain_metrics(img: Image.Image):
 
 
 # ── LLM Report ─────────────────────────────────────────────────────────────────
-def get_unified_report(images, all_probs, all_preds, avg_probs, consensus_pred, consensus_conf, overlay_images=None):
-    """Llama 4 Scout: sees all images + Grad-CAM overlays + grades, returns one cohesive report."""
+def get_unified_report(images, all_probs, all_preds, avg_probs, consensus_pred, consensus_conf,
+                       overlay_images=None, if_result=None, if_channel_imgs=None):
+    """
+    Llama 4 Scout: sees trichrome images + Grad-CAM overlays + IF channel images,
+    then returns one cohesive multimodal nephropathological report.
+    """
     groq_key = os.environ.get("GROQ_API_KEY", "")
     if not groq_key:
         try:
@@ -572,45 +676,92 @@ def get_unified_report(images, all_probs, all_preds, avg_probs, consensus_pred, 
             f"model probabilities across all images.\n\nPer-image grades:\n{per_image_summary}"
         )
 
-    prompt = f"""You are an expert nephropathologist reviewing a trichrome-stained kidney biopsy.
+    # Build the IF section of the prompt
+    if if_result and if_result.get("top_predictions"):
+        top_preds = if_result["top_predictions"]
+        if_summary_lines = "\n".join(
+            f"  #{i+1}: {p['display']} ({p['pct']:.1f}%)"
+            for i, p in enumerate(top_preds)
+        )
+        channels_used = ", ".join(if_result.get("channels_used", []))
+        channels_missing = ", ".join(if_result.get("channels_missing", []))
+        if_data_block = (
+            f"\nIF (IMMUNOFLUORESCENCE) CLASSIFIER OUTPUT:\n"
+            f"{if_summary_lines}\n"
+            f"  Channels analyzed: {channels_used}\n"
+            + (f"  Zero-filled (missing): {channels_missing}\n" if channels_missing else "")
+        )
+        has_if = True
+    else:
+        if_data_block = "\nIF (IMMUNOFLUORESCENCE) DATA: Not provided for this case.\n"
+        has_if = False
 
-Automated model output:
+    if_channel_note = ""
+    if has_if and if_channel_imgs:
+        uploaded_chs = [ch for ch in IF_CHANNELS if ch in if_channel_imgs]
+        if_channel_note = (
+            f"\n3. IF channel images ({', '.join(uploaded_chs)}) — "
+            f"each image represents a single fluorescence channel. "
+            f"Grad-CAM overlays highlight regions driving the IF classification.\n"
+        )
+
+    prompt = f"""You are an expert nephropathologist reviewing a kidney biopsy with both \
+Masson's trichrome staining (for interstitial fibrosis grading) and immunofluorescence (IF) staining.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TRICHROME FIBROSIS GRADING (ResNet-FPN model):
 - Consensus Grade: {CLASS_NAMES[consensus_pred]} ({CLASS_RANGE[consensus_pred]})
 - Confidence: {consensus_conf:.1f}%
-- Probability breakdown: {avg_breakdown}
+- Probability breakdown:
+{avg_breakdown}
 {multi_note}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{if_data_block}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 You are provided with:
-1. The original biopsy image(s)
-2. Grad-CAM overlay(s) — red/yellow = regions most discriminative for the predicted grade
+1. The original trichrome biopsy image(s)
+2. Trichrome Grad-CAM overlay(s) — red/yellow = regions most discriminative for the fibrosis grade
+{if_channel_note}
+CRITICAL INSTRUCTION: Every sentence must be anchored to a specific visual feature you actually \
+observe in the images provided. Do not write generic statements that would be true of any \
+{CLASS_NAMES[consensus_pred]} biopsy or any {top_preds[0]['display'] if has_if and if_result and if_result.get('top_predictions') else 'nephropathy'} case.
 
-CRITICAL INSTRUCTION: Every sentence you write must be specific to what you actually see in THIS image. \
-Do not write anything that would be generically true for any {CLASS_NAMES[consensus_pred]} biopsy. \
-If you catch yourself writing a general statement about fibrosis or ESKD risk, delete it and replace it \
-with something anchored to a specific visual feature in this image.
+**Trichrome — Visual Observations**
+Describe the spatial distribution of collagen deposition — is it periglomerular, peritubular, \
+or diffuse interstitial? What proportion of the cortex appears affected? Are tubules atrophied \
+uniformly or focally? What do the glomeruli look like — sclerotic, globally collapsed, segmentally \
+scarred, or relatively preserved? Where exactly does the Grad-CAM heatmap focus — periglomerular \
+zones, interstitium, vascular walls? Does that focus correlate with what you see there?
 
-**Visual Observations**
-Describe the spatial distribution of collagen deposition — is it periglomerular, peritubular, or diffuse? \
-What proportion of the cortex appears affected? Are tubules atrophied uniformly or focally? \
-What do the glomeruli look like — sclerotic, collapsed, or relatively preserved? \
-Where exactly does the Grad-CAM heatmap focus — periglomerular zones, interstitium, vascular areas? \
-Does that focus make sense given what you see there?
+{"**IF — Pattern Analysis**" if has_if else ""}
+{"Examine each uploaded IF channel image. Which markers show mesangial, capillary wall, or linear " if has_if else ""}
+{"tubular basement membrane positivity? Is the staining granular, linear, or diffuse? " if has_if else ""}
+{"Does the IF Grad-CAM overlay highlight the glomeruli, tubules, or both? " if has_if else ""}
+{"How does the observed IF pattern support or conflict with the top classifier prediction?" if has_if else ""}
+
+{"**Integrated Diagnosis**" if has_if else "**Diagnosis**"}
+{"Synthesise trichrome fibrosis grade with IF staining pattern. What single diagnosis best explains " if has_if else ""}
+{"all findings — fibrosis distribution, glomerular morphology, and IF positivity profile? " if has_if else ""}
+{"Note any discordance between classifier outputs and the visual evidence." if has_if else ""}
+{"Based on the trichrome pattern (not general fibrosis severity), what is the likely etiology?" if not has_if else ""}
 
 **Model Agreement**
-Does the grade match what you see? If yes, which specific visual feature is the strongest evidence? \
+Does the trichrome fibrosis grade match what you see visually? If yes, which specific feature is \
+the strongest supporting evidence? {"Does the IF classifier diagnosis align with the IF staining pattern?" if has_if else ""} \
 If the Grad-CAM focuses on an unexpected region, say so and explain why it might or might not be valid.
 
-**What this specific biopsy tells us about progression**
-Based on the pattern you see (not fibrosis severity in general), what is the likely etiology — \
-diabetic nephropathy, hypertensive nephrosclerosis, IgA, or other? What specific feature drives that inference?
-
 **Treatment & Recommendations**
-One paragraph. Be specific to the findings, not generic. If glomeruli appear preserved, note that. \
-If vascular changes are prominent, address that specifically.
+One paragraph. Be specific to these findings, not generic. If glomeruli appear preserved, note that. \
+If vascular changes are prominent, address that. {"If IF positivity suggests an immune-mediated process, " if has_if else ""}
+{"tailor the recommendation accordingly (e.g. immunosuppression, plasmapheresis, etc.)." if has_if else ""}
 
 **Plain-Language Summary**
 2-3 sentences for the patient. No jargon."""
 
     content_parts = [{"type": "text", "text": prompt}]
+
+    # Trichrome images + Grad-CAM overlays
     for i, img in enumerate(images):
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
@@ -626,6 +777,19 @@ If vascular changes are prominent, address that specifically.
             content_parts.append({
                 "type": "image_url",
                 "image_url": {"url": f"data:image/jpeg;base64,{b64_cam}"}
+            })
+
+    # IF channel images (if available)
+    if has_if and if_channel_imgs:
+        for ch in IF_CHANNELS:
+            if ch not in if_channel_imgs:
+                continue
+            buf_if = io.BytesIO()
+            if_channel_imgs[ch].save(buf_if, format="JPEG", quality=80)
+            b64_if = base64.b64encode(buf_if.getvalue()).decode("utf-8")
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64_if}"}
             })
 
     headers = {
@@ -665,7 +829,8 @@ def _latin1(text: str) -> str:
 
 
 def generate_pdf_report(images, overlay_images, all_probs, all_preds,
-                        avg_probs, consensus_pred, consensus_conf, report_text):
+                        avg_probs, consensus_pred, consensus_conf, report_text,
+                        if_result=None):
     from fpdf import FPDF
     from datetime import date as _date
     import html as _html
@@ -768,6 +933,39 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
         ry += bar_h + 1
 
     y += box_h + 4
+
+    # ── IF Diagnosis box (if available) ───────────────────────────────────────
+    if if_result and if_result.get("top_predictions"):
+        if_top = if_result["top_predictions"]
+        if_h   = 6 + len(if_top) * 4.5 + 3
+        pdf.set_fill_color(240, 240, 255)
+        pdf.set_draw_color(200, 200, 240)
+        pdf.set_line_width(0.25)
+        pdf.rect(pdf.l_margin, y, W, if_h, style="FD")
+        pdf.set_fill_color(80, 70, 200)
+        pdf.rect(pdf.l_margin, y, 3, if_h, style="F")
+
+        pdf.set_font("Helvetica", style="B", size=6.5)
+        pdf.set_text_color(80, 70, 200)
+        pdf.set_xy(pdf.l_margin + 5, y + 2)
+        pdf.cell(W - 10, 3.5, "IF (IMMUNOFLUORESCENCE) DIAGNOSIS", ln=0)
+
+        pdf.set_font("Helvetica", size=7)
+        pdf.set_text_color(*C_DARK)
+        iy = y + 6
+        for rank_i, pred in enumerate(if_top):
+            pdf.set_xy(pdf.l_margin + 5, iy)
+            label = _latin1(f"#{rank_i+1}  {pred['display']}  —  {pred['pct']:.1f}%")
+            pdf.cell(W - 10, 4, label, ln=0)
+            iy += 4.5
+
+        if if_result.get("channels_used"):
+            pdf.set_font("Helvetica", size=6)
+            pdf.set_text_color(*C_MID)
+            pdf.set_xy(pdf.l_margin + 5, iy - 1)
+            pdf.cell(W - 10, 3.5, _latin1("Channels: " + ", ".join(if_result["channels_used"])), ln=0)
+
+        y += if_h + 3
 
     # ── Divider ───────────────────────────────────────────────────────────────
     pdf.set_draw_color(*C_BORDER)
@@ -922,25 +1120,37 @@ st.markdown("""
 
 
 # ── Session State ──────────────────────────────────────────────────────────────
-for key in ["imgs", "all_probs", "all_preds"]:
+for key in ["imgs", "all_probs", "all_preds", "if_channel_imgs", "if_result"]:
     if key not in st.session_state:
         st.session_state[key] = None
 
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "Analysis",
+tab1, tab2, tab3, tab4 = st.tabs([
+    "Analysis & IF Diagnosis",
     "Clinicopathological Observation",
     "Grad-CAM Explainability",
     "Stain Normalisation",
-    "IF Diagnosis",
 ])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 1 — ANALYSIS
+# TAB 1 — ANALYSIS & IF DIAGNOSIS
 # ══════════════════════════════════════════════════════════════════════════════
 with tab1:
+    # ── Trichrome Fibrosis Grading ─────────────────────────────────────────────
+    st.markdown("""
+<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+    <div style="font-family:'Playfair Display',serif; font-size:18px; font-weight:700; color:#e0e6f0;">
+        Trichrome Fibrosis Grading
+    </div>
+    <div style="font-family:'IBM Plex Mono',monospace; font-size:9px; font-weight:500; letter-spacing:0.08em;
+                background:#0f1f40; color:#93c5fd; border:1px solid #1e3a6e; padding:4px 10px; border-radius:4px;">
+        ResNet-FPN &nbsp;·&nbsp; 4-CLASS GRADING
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
     col1, col2 = st.columns([2.0, 2.2], gap="large")
 
     with col1:
@@ -1081,6 +1291,172 @@ with tab1:
 </div>
 """, unsafe_allow_html=True)
 
+    # ── IF Diagnosis section ───────────────────────────────────────────────────
+    st.markdown("""
+<div style="height:1px; background:linear-gradient(90deg,transparent,#1e2d45,transparent);
+            margin:32px 0;"></div>
+<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+    <div style="font-family:'Playfair Display',serif; font-size:18px; font-weight:700; color:#e0e6f0;">
+        Immunofluorescence Diagnosis
+    </div>
+    <div style="font-family:'IBM Plex Mono',monospace; font-size:9px; font-weight:500; letter-spacing:0.08em;
+                background:#1a1a2e; color:#818cf8; border:1px solid #3730a3; padding:4px 10px; border-radius:4px;">
+        ResNet-50 &nbsp;·&nbsp; 9-CHANNEL IF
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+    st.markdown("""
+<div class="info-box">
+    <strong>How to use:</strong> Upload any combination of the 9 IF channel images below.
+    Missing channels are zero-filled automatically — more channels yield higher confidence.
+    Recommend uploading ≥ 3 channels for reliable results.
+    The model returns the top-3 most likely nephropathological diagnoses.
+    IF results are automatically included in the Clinicopathological Observation and Grad-CAM tabs.
+</div>
+""", unsafe_allow_html=True)
+
+    if_left, if_right = st.columns([2.5, 1.5], gap="large")
+
+    with if_left:
+        st.markdown('<div class="sec-label">Upload IF Images by Channel</div>', unsafe_allow_html=True)
+        row1_cols = st.columns(3, gap="small")
+        row2_cols = st.columns(3, gap="small")
+        row3_cols = st.columns(3, gap="small")
+        all_rows = [row1_cols, row2_cols, row3_cols]
+
+        channel_files = {}
+        for idx, ch in enumerate(IF_CHANNELS):
+            row_idx = idx // 3
+            col_idx = idx % 3
+            with all_rows[row_idx][col_idx]:
+                st.markdown(
+                    f'<div class="norm-panel-label">{ch}</div>',
+                    unsafe_allow_html=True,
+                )
+                f = st.file_uploader(
+                    ch,
+                    type=["jpg", "jpeg", "png"],
+                    key=f"if_ch_{ch}",
+                    label_visibility="collapsed",
+                )
+                if f:
+                    img = Image.open(f).convert("RGB")
+                    channel_files[ch] = img
+                    st.image(img, use_column_width=True)
+
+        # Persist channel images to session state; clear cached IF result if channels change
+        _if_bytes = b"".join(
+            channel_files[ch].resize((4, 4)).tobytes()
+            for ch in IF_CHANNELS if ch in channel_files
+        )
+        _if_upload_key = hashlib.md5(_if_bytes).hexdigest() if _if_bytes else ""
+        if st.session_state.get("_if_upload_key") != _if_upload_key:
+            st.session_state["_if_upload_key"] = _if_upload_key
+            st.session_state.if_channel_imgs   = channel_files if channel_files else None
+            # Invalidate cached IF result and IF Grad-CAM when channels change
+            for _k in ("if_result", "if_gcam_cache"):
+                st.session_state.pop(_k, None)
+
+    with if_right:
+        n_uploaded = len(channel_files)
+        st.markdown(
+            f'<div class="sec-label">{n_uploaded}/9 Channels Uploaded</div>',
+            unsafe_allow_html=True,
+        )
+
+        run_if_btn = st.button(
+            "▶  Run IF Classifier",
+            use_container_width=True,
+            key="if_run_btn",
+            disabled=(n_uploaded == 0),
+        )
+
+        if run_if_btn and channel_files:
+            if_model = load_if_model()
+            if if_model is None:
+                st.error("IF classifier model not loaded. Check checkpoint path.")
+            else:
+                tmp_paths = {}
+                tmp_to_delete = []
+                for ch, img in channel_files.items():
+                    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
+                        img.save(tf.name)
+                        tmp_paths[ch] = tf.name
+                        tmp_to_delete.append(tf.name)
+                try:
+                    with st.spinner("Classifying IF pattern..."):
+                        res = if_model.predict(tmp_paths, top_k=3)
+                    st.session_state["if_result"] = res
+                    # Also refresh report when IF results come in
+                    st.session_state.pop("report_key", None)
+                except Exception as e:
+                    st.error(f"Classification error: {str(e)}")
+                finally:
+                    for p in tmp_to_delete:
+                        try:
+                            os.unlink(p)
+                        except OSError:
+                            pass
+
+        if "if_result" in st.session_state and st.session_state["if_result"] is not None:
+            res = st.session_state["if_result"]
+
+            if res.get("warning"):
+                st.markdown(
+                    f'<div class="info-box" style="border-left-color:#f59e0b;">⚠️ {res["warning"]}</div>',
+                    unsafe_allow_html=True,
+                )
+
+            st.markdown(
+                '<div class="sec-label" style="margin-top:12px;">Top Diagnoses</div>',
+                unsafe_allow_html=True,
+            )
+
+            medals      = ["🥇", "🥈", "🥉"]
+            diag_colors = ["#818cf8", "#a78bfa", "#c4b5fd"]
+
+            for i, pred in enumerate(res["top_predictions"]):
+                pct   = pred["pct"]
+                color = diag_colors[i]
+                st.markdown(f"""
+<div class="card" style="padding:14px 16px; margin-bottom:10px;">
+    <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#4a5880; margin-bottom:4px;">
+        {medals[i]} RANK {i + 1}
+    </div>
+    <div style="font-size:14px; font-weight:700; color:{color}; margin-bottom:8px;">
+        {pred["display"]}
+    </div>
+    <div class="prob-track" style="margin-bottom:4px;">
+        <div class="prob-fill" style="width:{pct:.1f}%; background:{color};"></div>
+    </div>
+    <div style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:#7a8aaa;">
+        {pct:.1f}%
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+            used    = res["channels_used"]
+            missing = res["channels_missing"]
+            st.markdown(
+                f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:10px; '
+                f'color:#3d5070; margin-top:8px;">Channels used: {", ".join(used)}</div>',
+                unsafe_allow_html=True,
+            )
+            if missing:
+                st.markdown(
+                    f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:10px; '
+                    f'color:#2a3a56; margin-top:4px;">Zero-filled: {", ".join(missing)}</div>',
+                    unsafe_allow_html=True,
+                )
+
+        elif n_uploaded == 0:
+            st.markdown("""
+<div class="await-wrap">
+    <div class="await-label">No Images Uploaded</div>
+    <div class="await-sub">Upload at least one IF channel image to run the classifier.</div>
+</div>""", unsafe_allow_html=True)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — Clinicopathological Observation
@@ -1096,9 +1472,13 @@ with tab2:
         consensus_pred = int(np.argmax(avg_probs))
         consensus_conf = avg_probs[consensus_pred] * 100
 
-        # Cache key — invalidated whenever the uploaded images change
+        # Cache key — invalidated whenever trichrome images OR IF data changes
         _thumb_bytes = b"".join(im.resize((8, 8)).tobytes() for im in st.session_state.imgs)
-        _report_key  = hashlib.md5(_thumb_bytes).hexdigest()
+        _if_key_part = st.session_state.get("_if_upload_key", "")
+        _if_ran      = "1" if st.session_state.get("if_result") is not None else "0"
+        _report_key  = hashlib.md5(
+            _thumb_bytes + _if_key_part.encode() + _if_ran.encode()
+        ).hexdigest()
 
         st.markdown("""
 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
@@ -1112,6 +1492,7 @@ with tab2:
         rcol1, rcol2 = st.columns([1, 2.4], gap="large")
 
         with rcol1:
+            st.markdown('<div class="sec-label">Trichrome Images</div>', unsafe_allow_html=True)
             for i, im in enumerate(st.session_state.imgs):
                 caption = (
                     f"Image {i+1} — {CLASS_NAMES[all_preds[i]]}"
@@ -1124,6 +1505,15 @@ with tab2:
                 if overlays and i < len(overlays) and overlays[i] is not None:
                     st.image(overlays[i], use_column_width=True,
                              caption=f"Grad-CAM{' (Image ' + str(i+1) + ')' if len(st.session_state.imgs) > 1 else ''}")
+
+            # Show IF channel images if available
+            _if_imgs = st.session_state.get("if_channel_imgs")
+            if _if_imgs:
+                st.markdown('<div class="sec-label" style="margin-top:16px;">IF Channel Images</div>',
+                            unsafe_allow_html=True)
+                for ch in IF_CHANNELS:
+                    if ch in _if_imgs:
+                        st.image(_if_imgs[ch], use_column_width=True, caption=ch)
 
         with rcol2:
             # Only call the LLM (and rebuild the PDF) when images have changed
@@ -1148,6 +1538,8 @@ with tab2:
                             consensus_pred=consensus_pred,
                             consensus_conf=consensus_conf,
                             overlay_images=overlay_images,
+                            if_result=st.session_state.get("if_result"),
+                            if_channel_imgs=st.session_state.get("if_channel_imgs"),
                         )
                         pdf_bytes = generate_pdf_report(
                             images=st.session_state.imgs,
@@ -1158,6 +1550,7 @@ with tab2:
                             consensus_pred=consensus_pred,
                             consensus_conf=consensus_conf,
                             report_text=report,
+                            if_result=st.session_state.get("if_result"),
                         )
                         st.session_state.report_key      = _report_key
                         st.session_state.report_text     = report
@@ -1293,12 +1686,96 @@ with tab3:
             st.markdown('<div class="norm-panel-label">Overlay</div>', unsafe_allow_html=True)
             st.image(overlay_np, use_column_width=True)
 
-
     else:
         st.markdown("""
 <div class="await-wrap">
     <div class="await-label">No Image Loaded</div>
     <div class="await-sub">Upload images in the Analysis tab first, or use the uploader above.</div>
+</div>""", unsafe_allow_html=True)
+
+    # ── IF Grad-CAM Section ────────────────────────────────────────────────────
+    _if_imgs_gcam = st.session_state.get("if_channel_imgs")
+    if _if_imgs_gcam:
+        st.markdown("""
+<div style="height:1px; background:linear-gradient(90deg,transparent,#1e2d45,transparent);
+            margin:32px 0;"></div>
+<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+    <div style="font-family:'Playfair Display',serif; font-size:18px; font-weight:700; color:#e0e6f0;">
+        IF Grad-CAM Explainability
+    </div>
+    <div style="font-family:'IBM Plex Mono',monospace; font-size:9px; font-weight:500; letter-spacing:0.08em;
+                background:#1a1a2e; color:#818cf8; border:1px solid #3730a3; padding:4px 10px; border-radius:4px;">
+        ResNet-50 &nbsp;·&nbsp; 9-CHANNEL IF
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+        st.markdown("""
+<div class="info-box">
+    <strong>IF Grad-CAM:</strong> Grad-CAM is computed on the ResNet-50 IF classifier (layer4).
+    The resulting spatial activation map is overlaid on each uploaded IF channel image, showing
+    which glomerular or tubular regions drove the predicted diagnosis.
+    <br><br>
+    <strong>Colour scale:</strong>
+    <span style="color:#4466ff;">Blue</span> = low attention &nbsp;|&nbsp;
+    <span style="color:#00cc88;">Green</span> = moderate &nbsp;|&nbsp;
+    <span style="color:#ffbb00;">Yellow</span> = high &nbsp;|&nbsp;
+    <span style="color:#ff3333;">Red</span> = peak discriminative region.
+</div>
+""", unsafe_allow_html=True)
+
+        run_if_gcam_btn = st.button(
+            "▶  Compute IF Grad-CAM",
+            use_container_width=False,
+            key="if_gcam_run_btn",
+        )
+
+        if run_if_gcam_btn:
+            with st.spinner("Computing IF Grad-CAM..."):
+                try:
+                    _if_overlays, _if_pred_cls, _if_probs = compute_if_gradcam(
+                        _if_imgs_gcam, target_class=None
+                    )
+                    st.session_state["if_gcam_cache"] = (_if_overlays, _if_pred_cls, _if_probs)
+                except Exception as _eg:
+                    st.error(f"IF Grad-CAM error: {str(_eg)}")
+
+        if "if_gcam_cache" in st.session_state:
+            _if_overlays, _if_pred_cls, _if_probs = st.session_state["if_gcam_cache"]
+
+            # Resolve predicted class display name
+            _if_model_obj   = load_if_model()
+            _if_class_name  = (_if_model_obj.classes[_if_pred_cls]
+                               if _if_model_obj is not None else str(_if_pred_cls))
+            _if_disp_name   = IF_CLASS_DISPLAY.get(_if_class_name, _if_class_name)
+            _if_conf        = float(_if_probs[_if_pred_cls]) * 100
+
+            st.markdown(
+                f'<div class="info-box" style="border-left-color:#818cf8; margin-top:8px;">'
+                f'IF classifier predicted: <strong style="color:#818cf8;">{_if_disp_name}</strong>'
+                f' &nbsp;·&nbsp; confidence <strong style="color:#818cf8;">{_if_conf:.1f}%</strong>'
+                f'<br>Activation maps below highlight regions that most influenced this diagnosis.</div>',
+                unsafe_allow_html=True,
+            )
+
+            uploaded_chs = [ch for ch in IF_CHANNELS if ch in _if_overlays]
+            # Lay out overlays in rows of 3
+            for row_start in range(0, len(uploaded_chs), 3):
+                row_chs = uploaded_chs[row_start:row_start + 3]
+                _gcols  = st.columns(len(row_chs), gap="medium")
+                for _gc, _ch in zip(_gcols, row_chs):
+                    with _gc:
+                        st.markdown(
+                            f'<div class="norm-panel-label">{_ch} — Grad-CAM Overlay</div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.image(_if_overlays[_ch], use_column_width=True)
+
+        else:
+            st.markdown("""
+<div class="await-wrap" style="margin-top:8px;">
+    <div class="await-label">IF Grad-CAM Not Yet Run</div>
+    <div class="await-sub">Click "Compute IF Grad-CAM" above to generate activation maps for your IF channels.</div>
 </div>""", unsafe_allow_html=True)
 
 
@@ -1506,158 +1983,6 @@ with tab4:
     <div class="await-label">Upload Images to Begin</div>
     <div class="await-sub">Provide a source biopsy to normalise and a reference image from the target lab.<br>
     The tool will transfer the reference stain profile and compare grade predictions before and after.</div>
-</div>""", unsafe_allow_html=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 5 — IF DIAGNOSIS
-# ══════════════════════════════════════════════════════════════════════════════
-with tab5:
-    st.markdown("""
-<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
-    <div style="font-family:'Playfair Display',serif; font-size:18px; font-weight:700; color:#e0e6f0;">
-        Immunofluorescence Diagnosis
-    </div>
-    <div style="font-family:'IBM Plex Mono',monospace; font-size:9px; font-weight:500; letter-spacing:0.08em;
-                background:#1a1a2e; color:#818cf8; border:1px solid #3730a3; padding:4px 10px; border-radius:4px;">
-        ResNet-50 &nbsp;·&nbsp; 9-CHANNEL IF
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-    st.markdown("""
-<div class="info-box">
-    <strong>How to use:</strong> Upload any combination of the 9 IF channel images below.
-    Missing channels are zero-filled automatically — more channels yield higher confidence.
-    Recommend uploading ≥ 3 channels for reliable results.
-    The model returns the top-3 most likely nephropathological diagnoses.
-</div>
-""", unsafe_allow_html=True)
-
-    if_left, if_right = st.columns([2.5, 1.5], gap="large")
-
-    with if_left:
-        st.markdown('<div class="sec-label">Upload IF Images by Channel</div>', unsafe_allow_html=True)
-        row1_cols = st.columns(3, gap="small")
-        row2_cols = st.columns(3, gap="small")
-        row3_cols = st.columns(3, gap="small")
-        all_rows = [row1_cols, row2_cols, row3_cols]
-
-        channel_files = {}
-        for idx, ch in enumerate(IF_CHANNELS):
-            row_idx = idx // 3
-            col_idx = idx % 3
-            with all_rows[row_idx][col_idx]:
-                st.markdown(
-                    f'<div class="norm-panel-label">{ch}</div>',
-                    unsafe_allow_html=True,
-                )
-                f = st.file_uploader(
-                    ch,
-                    type=["jpg", "jpeg", "png"],
-                    key=f"if_ch_{ch}",
-                    label_visibility="collapsed",
-                )
-                if f:
-                    img = Image.open(f).convert("RGB")
-                    channel_files[ch] = img
-                    st.image(img, use_column_width=True)
-
-    with if_right:
-        n_uploaded = len(channel_files)
-        st.markdown(
-            f'<div class="sec-label">{n_uploaded}/9 Channels Uploaded</div>',
-            unsafe_allow_html=True,
-        )
-
-        run_if_btn = st.button(
-            "▶  Run IF Classifier",
-            use_container_width=True,
-            key="if_run_btn",
-            disabled=(n_uploaded == 0),
-        )
-
-        if run_if_btn and channel_files:
-            if_model = load_if_model()
-            if if_model is None:
-                st.error("IF classifier model not loaded. Check checkpoint path.")
-            else:
-                tmp_paths = {}
-                tmp_to_delete = []
-                for ch, img in channel_files.items():
-                    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
-                        img.save(tf.name)
-                        tmp_paths[ch] = tf.name
-                        tmp_to_delete.append(tf.name)
-                try:
-                    with st.spinner("Classifying IF pattern..."):
-                        res = if_model.predict(tmp_paths, top_k=3)
-                    st.session_state["if_result"] = res
-                except Exception as e:
-                    st.error(f"Classification error: {str(e)}")
-                finally:
-                    for p in tmp_to_delete:
-                        try:
-                            os.unlink(p)
-                        except OSError:
-                            pass
-
-        if "if_result" in st.session_state:
-            res = st.session_state["if_result"]
-
-            if res.get("warning"):
-                st.markdown(
-                    f'<div class="info-box" style="border-left-color:#f59e0b;">⚠️ {res["warning"]}</div>',
-                    unsafe_allow_html=True,
-                )
-
-            st.markdown(
-                '<div class="sec-label" style="margin-top:12px;">Top Diagnoses</div>',
-                unsafe_allow_html=True,
-            )
-
-            medals = ["🥇", "🥈", "🥉"]
-            diag_colors = ["#818cf8", "#a78bfa", "#c4b5fd"]
-
-            for i, pred in enumerate(res["top_predictions"]):
-                pct   = pred["pct"]
-                color = diag_colors[i]
-                st.markdown(f"""
-<div class="card" style="padding:14px 16px; margin-bottom:10px;">
-    <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#4a5880; margin-bottom:4px;">
-        {medals[i]} RANK {i + 1}
-    </div>
-    <div style="font-size:14px; font-weight:700; color:{color}; margin-bottom:8px;">
-        {pred["display"]}
-    </div>
-    <div class="prob-track" style="margin-bottom:4px;">
-        <div class="prob-fill" style="width:{pct:.1f}%; background:{color};"></div>
-    </div>
-    <div style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:#7a8aaa;">
-        {pct:.1f}%
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-            used    = res["channels_used"]
-            missing = res["channels_missing"]
-            st.markdown(
-                f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:10px; '
-                f'color:#3d5070; margin-top:8px;">Channels used: {", ".join(used)}</div>',
-                unsafe_allow_html=True,
-            )
-            if missing:
-                st.markdown(
-                    f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:10px; '
-                    f'color:#2a3a56; margin-top:4px;">Zero-filled: {", ".join(missing)}</div>',
-                    unsafe_allow_html=True,
-                )
-
-        elif n_uploaded == 0:
-            st.markdown("""
-<div class="await-wrap">
-    <div class="await-label">No Images Uploaded</div>
-    <div class="await-sub">Upload at least one IF channel image to run the classifier.</div>
 </div>""", unsafe_allow_html=True)
 
 
