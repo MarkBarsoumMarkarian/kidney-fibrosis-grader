@@ -13,6 +13,8 @@ import io
 import cv2
 import hashlib
 import tempfile
+import json
+import random
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from utils.model_builder import model as build_model
@@ -654,6 +656,36 @@ def build_if_mosaic(channel_imgs: dict) -> Image.Image:
     return mosaic
 
 
+def get_api_keys() -> list:
+    """Return a shuffled list of OpenRouter API keys.
+
+    Checks OPENROUTER_API_KEYS (JSON array) first, then falls back to the
+    single OPENROUTER_API_KEY value.  Both environment variables and
+    Streamlit secrets are checked in that order.
+    """
+    keys_raw = os.environ.get("OPENROUTER_API_KEYS", "")
+    if not keys_raw:
+        try:
+            keys_raw = st.secrets.get("OPENROUTER_API_KEYS", "")
+        except Exception:
+            pass
+    if keys_raw:
+        try:
+            keys = json.loads(keys_raw)
+            random.shuffle(keys)
+            return keys
+        except Exception:
+            pass
+    # Fall back to single key
+    single = os.environ.get("OPENROUTER_API_KEY", "")
+    if not single:
+        try:
+            single = st.secrets.get("OPENROUTER_API_KEY", "")
+        except Exception:
+            pass
+    return [single] if single else []
+
+
 def llm_review_if_panel(mosaic_b64: str, top_predictions: list, channels_used: list,
                         multi_channel_notes: str = "") -> str:
     """
@@ -662,13 +694,8 @@ def llm_review_if_panel(mosaic_b64: str, top_predictions: list, channels_used: l
 
     Returns the response text, or an error string on failure.
     """
-    api_key = os.environ.get("OPENROUTER_API_KEY", "")
-    if not api_key:
-        try:
-            api_key = st.secrets["OPENROUTER_API_KEY"]
-        except Exception:
-            pass
-    if not api_key:
+    api_keys = get_api_keys()
+    if not api_keys:
         return "⚠️ OPENROUTER_API_KEY not configured — LLM review skipped."
 
     top = top_predictions[0] if top_predictions else {}
@@ -708,45 +735,48 @@ def llm_review_if_panel(mosaic_b64: str, top_predictions: list, channels_used: l
     ]
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
     }
 
     last_err = None
-    for model_id in IF_REVIEW_MODELS:
-        payload = {
-            "model": model_id,
-            "messages": messages,
-            "max_tokens": 512,
-            "temperature": 0.3,
-        }
-        for attempt in range(3):
-            try:
-                resp = requests.post(
-                    OPENROUTER_API_URL,
-                    headers=headers,
-                    json=payload,
-                    timeout=60,
-                )
-                if resp.status_code == 401:
-                    return "⚠️ LLM review failed: OpenRouter API key is invalid or missing."
-                if resp.status_code == 429:
-                    wait = 2 ** attempt
-                    time.sleep(wait)
-                    continue
-                if resp.status_code in (404, 529):
-                    last_err = f"{model_id} unavailable ({resp.status_code})"
+    for api_key in api_keys:
+        headers["Authorization"] = f"Bearer {api_key}"
+        for model_id in IF_REVIEW_MODELS:
+            payload = {
+                "model": model_id,
+                "messages": messages,
+                "max_tokens": 512,
+                "temperature": 0.3,
+            }
+            for attempt in range(3):
+                try:
+                    resp = requests.post(
+                        OPENROUTER_API_URL,
+                        headers=headers,
+                        json=payload,
+                        timeout=60,
+                    )
+                    if resp.status_code == 401:
+                        last_err = f"key ...{api_key[-4:]} invalid or missing"
+                        break
+                    if resp.status_code == 429:
+                        wait = 2 ** attempt
+                        time.sleep(wait)
+                        continue
+                    if resp.status_code in (404, 529):
+                        last_err = f"{model_id} unavailable ({resp.status_code})"
+                        break
+                    resp.raise_for_status()
+                    return resp.json()["choices"][0]["message"]["content"].strip()
+                except requests.exceptions.Timeout:
+                    last_err = f"{model_id} timed out"
                     break
-                resp.raise_for_status()
-                return resp.json()["choices"][0]["message"]["content"].strip()
-            except requests.exceptions.Timeout:
-                last_err = f"{model_id} timed out"
-                break
-            except Exception as exc:
-                last_err = str(exc)
-                break
-        else:
-            last_err = f"{model_id} hit rate limit after 3 retries"
-    return f"⚠️ LLM review failed: all models unavailable. Last error: {last_err}"
+                except Exception as exc:
+                    last_err = str(exc)
+                    break
+            else:
+                last_err = f"{model_id} rate limited on key ...{api_key[-4:]}"
+                break  # try next key
+    return f"⚠️ LLM review failed: all keys and models exhausted. Last error: {last_err}"
 def _get_od(img_np: np.ndarray):
     """Convert uint8 RGB image to optical density (OD) space."""
     img = np.maximum(img_np.astype(np.float32) / 255.0, 1e-6)
@@ -849,13 +879,8 @@ def get_unified_report(images, all_probs, all_preds, avg_probs, consensus_pred, 
     Llama 4 Scout via OpenRouter: sees trichrome images + Grad-CAM overlays + IF channel images,
     then returns one cohesive multimodal nephropathological report.
     """
-    api_key = os.environ.get("OPENROUTER_API_KEY", "")
-    if not api_key:
-        try:
-            api_key = st.secrets["OPENROUTER_API_KEY"]
-        except Exception:
-            pass
-    if not api_key:
+    api_keys = get_api_keys()
+    if not api_keys:
         raise ValueError(
             "OPENROUTER_API_KEY not configured. "
             "Add your OpenRouter API key to Streamlit secrets (OPENROUTER_API_KEY) "
@@ -1009,7 +1034,6 @@ If vascular changes are prominent, address that. {"If IF positivity suggests an 
 
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
     }
     base_payload = {
         "messages": [{"role": "user", "content": content_parts}],
@@ -1018,37 +1042,39 @@ If vascular changes are prominent, address that. {"If IF positivity suggests an 
     }
 
     last_err = None
-    for model_id in REPORT_MODELS:
-        payload = {**base_payload, "model": model_id}
-        for attempt in range(3):
-            try:
-                response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=90)
-                if response.status_code == 401:
-                    raise ValueError("OpenRouter API key is invalid or missing.")
-                if response.status_code == 429:
-                    wait = 2 ** attempt
-                    time.sleep(wait)
-                    continue
-                if response.status_code in (404, 529):
-                    last_err = (
-                        f"Model not found or unavailable on OpenRouter: {model_id}. "
-                        f"Status: {response.status_code}. Body: {response.text[:300]}"
-                    )
+    for api_key in api_keys:
+        headers["Authorization"] = f"Bearer {api_key}"
+        for model_id in REPORT_MODELS:
+            payload = {**base_payload, "model": model_id}
+            for attempt in range(3):
+                try:
+                    response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=90)
+                    if response.status_code == 401:
+                        last_err = f"key ...{api_key[-4:]} invalid or missing"
+                        break
+                    if response.status_code == 429:
+                        wait = 2 ** attempt
+                        time.sleep(wait)
+                        continue
+                    if response.status_code in (404, 529):
+                        last_err = (
+                            f"Model not found or unavailable on OpenRouter: {model_id}. "
+                            f"Status: {response.status_code}. Body: {response.text[:300]}"
+                        )
+                        break
+                    response.raise_for_status()
+                    raw = response.json()["choices"][0]["message"]["content"]
+                    return _clean_report_text(raw)
+                except requests.exceptions.Timeout:
+                    last_err = f"{model_id} timed out"
                     break
-                response.raise_for_status()
-                raw = response.json()["choices"][0]["message"]["content"]
-                return _clean_report_text(raw)
-            except ValueError:
-                raise
-            except requests.exceptions.Timeout:
-                last_err = f"{model_id} timed out"
-                break
-            except Exception as exc:
-                last_err = str(exc)
-                break
-        else:
-            last_err = f"{model_id} hit rate limit after 3 retries"
-    raise ValueError(f"All report models failed. Last error: {last_err}")
+                except Exception as exc:
+                    last_err = str(exc)
+                    break
+            else:
+                last_err = f"{model_id} rate limited on key ...{api_key[-4:]}"
+                break  # try next key
+    raise ValueError(f"All keys and models exhausted. Last error: {last_err}")
 
 
 def _clean_report_text(text: str) -> str:
