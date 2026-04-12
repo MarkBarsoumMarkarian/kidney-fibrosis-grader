@@ -52,6 +52,11 @@ st.markdown("""
 
 *, *::before, *::after { box-sizing: border-box; }
 
+html, body, [data-testid="stAppViewContainer"] {
+    scroll-behavior: auto !important;
+    overflow-y: scroll !important;
+}
+
 html, body,
 [data-testid="stAppViewContainer"],
 [data-testid="stAppViewContainer"] > .main,
@@ -844,25 +849,27 @@ If vascular changes are prominent, address that. {"If IF positivity suggests an 
                 "image_url": {"url": f"data:image/jpeg;base64,{b64_cam}"}
             })
 
-    # IF channel images (if available)
+    # IF panel — send as single mosaic instead of individual channels
     if has_if and if_channel_imgs:
-        for ch in IF_CHANNELS:
-            if ch not in if_channel_imgs:
-                continue
-            buf_if = io.BytesIO()
-            if_channel_imgs[ch].save(buf_if, format="JPEG", quality=80)
-            b64_if = base64.b64encode(buf_if.getvalue()).decode("utf-8")
-            content_parts.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{b64_if}"}
-            })
+        # Build multi-list dict expected by build_if_mosaic
+        mosaic_dict = {ch: [img] for ch, img in if_channel_imgs.items()}
+        mosaic_img = build_if_mosaic(mosaic_dict)
+        mosaic_img_resized = mosaic_img.resize((672, 672), Image.LANCZOS)
+        buf_mosaic = io.BytesIO()
+        mosaic_img_resized.save(buf_mosaic, format="JPEG", quality=85)
+        b64_mosaic = base64.b64encode(buf_mosaic.getvalue()).decode("utf-8")
+        content_parts.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64_mosaic}"}
+        })
+        del mosaic_img, mosaic_img_resized, buf_mosaic
 
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}"
     }
     payload = {
-        "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "model": "meta-llama/llama-4-maverick-17b-128e-instruct:free",
         "messages": [{"role": "user", "content": content_parts}],
         "max_tokens": 1800,
         "temperature": 0.3,
@@ -1370,12 +1377,12 @@ with tab1:
                 st.session_state.all_preds = None
 
             if len(imgs) == 1:
-                st.image(imgs[0], use_column_width=True)
+                st.image(imgs[0], use_container_width=True)
             else:
                 thumb_cols = st.columns(len(imgs))
                 for i, (tc, im) in enumerate(zip(thumb_cols, imgs)):
                     with tc:
-                        st.image(im, use_column_width=True, caption=f"Image {i+1}")
+                        st.image(im, use_container_width=True, caption=f"Image {i+1}")
         else:
             st.session_state.imgs      = None
             st.session_state.all_probs = None
@@ -1545,7 +1552,7 @@ with tab1:
                     imgs = [Image.open(f).convert("RGB") for f in fs]
                     channel_files[ch] = imgs
                     for img in imgs:
-                        st.image(img, use_column_width=True)
+                        st.image(img, use_container_width=True)
 
         # Persist channel images to session state; clear cached IF result if channels change.
         # A tiny thumbnail fingerprint is used as a stable, content-based cache key for the
@@ -1669,7 +1676,7 @@ with tab1:
                     unsafe_allow_html=True,
                 )
                 mosaic = build_if_mosaic(channel_files)
-                st.image(mosaic, caption="IF Panel Mosaic (sent to LLM reviewer)", use_column_width=True)
+                st.image(mosaic, caption="IF Panel Mosaic (sent to LLM reviewer)", use_container_width=True)
 
                 # Build notes about channels that had multiple images averaged
                 notes = [
@@ -1747,11 +1754,11 @@ with tab2:
                     if len(st.session_state.imgs) > 1
                     else "Analyzed biopsy image"
                 )
-                st.image(im, use_column_width=True, caption=caption)
+                st.image(im, use_container_width=True, caption=caption)
                 # Show Grad-CAM overlay if available from the cached report
                 overlays = st.session_state.get("report_overlays")
                 if overlays and i < len(overlays) and overlays[i] is not None:
-                    st.image(overlays[i], use_column_width=True,
+                    st.image(overlays[i], use_container_width=True,
                              caption=f"Grad-CAM{' (Image ' + str(i+1) + ')' if len(st.session_state.imgs) > 1 else ''}")
 
             # Show IF channel images if available
@@ -1761,7 +1768,7 @@ with tab2:
                             unsafe_allow_html=True)
                 for ch in IF_CHANNELS:
                     if ch in _if_imgs:
-                        st.image(_if_imgs[ch], use_column_width=True, caption=ch)
+                        st.image(_if_imgs[ch], use_container_width=True, caption=ch)
 
         with rcol2:
             # Show API key input if OPENROUTER_API_KEY is not configured server-side
@@ -1965,13 +1972,13 @@ with tab3:
         g1, g2, g3 = st.columns(3, gap="medium")
         with g1:
             st.markdown('<div class="norm-panel-label">Original Image</div>', unsafe_allow_html=True)
-            st.image(selected_img, use_column_width=True)
+            st.image(selected_img, use_container_width=True)
         with g2:
             st.markdown('<div class="norm-panel-label">Grad-CAM Heatmap</div>', unsafe_allow_html=True)
-            st.image(heatmap_rgb, use_column_width=True)
+            st.image(heatmap_rgb, use_container_width=True)
         with g3:
             st.markdown('<div class="norm-panel-label">Overlay</div>', unsafe_allow_html=True)
-            st.image(overlay_np, use_column_width=True)
+            st.image(overlay_np, use_container_width=True)
 
     else:
         st.markdown("""
@@ -2031,7 +2038,7 @@ with tab4:
             sn_source = src_opts[src_choice]
 
         if sn_source:
-            st.image(sn_source, use_column_width=True, caption="Source (original)")
+            st.image(sn_source, use_container_width=True, caption="Source (original)")
 
     with sn_right:
         st.markdown('<div class="sec-label">Reference Image (target stain)</div>', unsafe_allow_html=True)
@@ -2041,7 +2048,7 @@ with tab4:
         )
         sn_reference = Image.open(sn_ref_upload).convert("RGB") if sn_ref_upload else None
         if sn_reference:
-            st.image(sn_reference, use_column_width=True, caption="Reference (target lab)")
+            st.image(sn_reference, use_container_width=True, caption="Reference (target lab)")
 
     if sn_source and sn_reference:
         st.markdown("---")
@@ -2077,13 +2084,13 @@ with tab4:
             r1, r2, r3 = st.columns(3, gap="medium")
             with r1:
                 st.markdown('<div class="norm-panel-label">Source (Original)</div>', unsafe_allow_html=True)
-                st.image(sn_source, use_column_width=True)
+                st.image(sn_source, use_container_width=True)
             with r2:
                 st.markdown('<div class="norm-panel-label">Reference</div>', unsafe_allow_html=True)
-                st.image(sn_reference, use_column_width=True)
+                st.image(sn_reference, use_container_width=True)
             with r3:
                 st.markdown('<div class="norm-panel-label">Normalised Output</div>', unsafe_allow_html=True)
-                st.image(result_img, use_column_width=True)
+                st.image(result_img, use_container_width=True)
 
             st.markdown('<div class="sec-label" style="margin-top:20px;">Stain Statistics</div>', unsafe_allow_html=True)
             m1, m2, m3 = st.columns(3, gap="medium")
