@@ -558,11 +558,24 @@ def pil_to_base64(img: Image.Image, quality: int = 85) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
+def _gray_normalized_from_pil(pil_img: Image.Image, size: int = _MOSAIC_CELL) -> np.ndarray:
+    """Apply the same grayscale normalisation as load_gray_normalized but from a PIL Image."""
+    arr = np.array(pil_img.convert("L").resize((size, size), Image.BILINEAR), dtype=np.float32) / 255.0
+    nz = arr[arr > 0.05]
+    if len(nz) > 50:
+        arr = (arr - nz.mean()) / (nz.std() + 1e-6)
+    return arr
+
+
 def build_if_mosaic(channel_imgs: dict) -> Image.Image:
     """
     Build a 3×3 RGB grid of the 9 IF channels in the order defined by IF_CHANNELS.
     Each cell is _MOSAIC_CELL × _MOSAIC_CELL pixels.
+
+    channel_imgs: dict[str, list[PIL.Image]] — one or more PIL images per channel.
     Missing channels are filled with a black square labelled "MISSING".
+    Channels with multiple images are pixel-wise averaged (grayscale-normalised) and
+    the count is appended to the label, e.g. "IgG (×3)".
     Channel names are drawn in white in the top-left corner of each cell.
     """
     cell = _MOSAIC_CELL
@@ -582,10 +595,25 @@ def build_if_mosaic(channel_imgs: dict) -> Image.Image:
         col = idx % _MOSAIC_COLS
         x0, y0 = col * cell, row * cell
 
-        if ch in channel_imgs:
-            cell_img = channel_imgs[ch].convert("RGB").resize((cell, cell), Image.BILINEAR)
+        imgs = channel_imgs.get(ch)
+        if imgs:
+            n = len(imgs)
+            if n == 1:
+                cell_img = imgs[0].convert("RGB").resize((cell, cell), Image.BILINEAR)
+                label = ch
+            else:
+                # Average all images as grayscale normalised float32 arrays
+                arrays = [_gray_normalized_from_pil(pil_img, size=cell) for pil_img in imgs]
+                avg = np.mean(arrays, axis=0)
+                # Rescale to [0, 255] for display
+                lo, hi = avg.min(), avg.max()
+                if hi > lo:
+                    avg = (avg - lo) / (hi - lo) * 255.0
+                else:
+                    avg = np.zeros_like(avg)
+                cell_img = Image.fromarray(avg.astype(np.uint8), mode="L").convert("RGB")
+                label = f"{ch} (\u00d7{n})"
             mosaic.paste(cell_img, (x0, y0))
-            label = ch
         else:
             # Black square already present; just add label
             label = f"{ch}\nMISSING"
@@ -597,7 +625,8 @@ def build_if_mosaic(channel_imgs: dict) -> Image.Image:
     return mosaic
 
 
-def llm_review_if_panel(mosaic_b64: str, top_predictions: list, channels_used: list) -> str:
+def llm_review_if_panel(mosaic_b64: str, top_predictions: list, channels_used: list,
+                        multi_channel_notes: str = "") -> str:
     """
     Send the IF mosaic to OpenRouter (Gemma 4 31B free) for a concise
     nephropathologist-style safety review.
@@ -624,8 +653,9 @@ def llm_review_if_panel(mosaic_b64: str, top_predictions: list, channels_used: l
         f"IgG, IgA, IgM (row 1), C3, C1q, kappa (row 2), lambda, fibrinogen, albumin (row 3). "
         f"Channels shown in black labelled MISSING were not uploaded.\n\n"
         f"The AI model predicted: {diag_label} ({diag_pct:.1f}% confidence).\n"
-        f"Channels used: {ch_str}.\n\n"
-        "Review the mosaic carefully. In 3-5 concise sentences:\n"
+        f"Channels used: {ch_str}.\n"
+        + (f"{multi_channel_notes}\n" if multi_channel_notes else "")
+        + "\nReview the mosaic carefully. In 3-5 concise sentences:\n"
         "1. Does the staining pattern agree with the model's prediction?\n"
         "2. Flag anything that contradicts or is clinically concerning.\n"
         "3. Note any missing channels that would be critical for this diagnosis.\n"
@@ -1591,7 +1621,7 @@ with tab1:
         row3_cols = st.columns(3, gap="small")
         all_rows = [row1_cols, row2_cols, row3_cols]
 
-        channel_files = {}
+        channel_files: dict = {}
         for idx, ch in enumerate(IF_CHANNELS):
             row_idx = idx // 3
             col_idx = idx % 3
@@ -1600,28 +1630,34 @@ with tab1:
                     f'<div class="norm-panel-label">{ch}</div>',
                     unsafe_allow_html=True,
                 )
-                f = st.file_uploader(
+                fs = st.file_uploader(
                     ch,
                     type=["jpg", "jpeg", "png"],
                     key=f"if_ch_{ch}",
                     label_visibility="collapsed",
+                    accept_multiple_files=True,
                 )
-                if f:
-                    img = Image.open(f).convert("RGB")
-                    channel_files[ch] = img
-                    st.image(img, use_column_width=True)
+                if fs:
+                    imgs = [Image.open(f).convert("RGB") for f in fs]
+                    channel_files[ch] = imgs
+                    for img in imgs:
+                        st.image(img, use_column_width=True)
 
         # Persist channel images to session state; clear cached IF result if channels change.
         # A tiny thumbnail fingerprint is used as a stable, content-based cache key for the
         # uploaded IF channels (avoids re-running the classifier when nothing has changed).
         _if_bytes = b"".join(
-            channel_files[ch].resize(_IF_HASH_THUMB_SIZE).tobytes()
+            img.resize(_IF_HASH_THUMB_SIZE).tobytes()
             for ch in IF_CHANNELS if ch in channel_files
+            for img in channel_files[ch]
         )
         _if_upload_key = hashlib.md5(_if_bytes).hexdigest() if _if_bytes else ""
         if st.session_state.get("_if_upload_key") != _if_upload_key:
             st.session_state["_if_upload_key"] = _if_upload_key
-            st.session_state.if_channel_imgs   = channel_files if channel_files else None
+            # Store the first image per channel for Grad-CAM, PDF, and other consumers
+            st.session_state.if_channel_imgs = (
+                {ch: imgs[0] for ch, imgs in channel_files.items()} if channel_files else None
+            )
             # Invalidate cached IF result, IF Grad-CAM, and LLM review when channels change
             old_key = st.session_state.get("_if_upload_key", "")
             for _k in list(st.session_state.keys()):
@@ -1647,16 +1683,17 @@ with tab1:
             if if_model is None:
                 st.error("IF classifier model not loaded. Check checkpoint path.")
             else:
-                tmp_paths = {}
+                # Use only the first image per channel for the trained model
+                inference_tmp_paths = {}
                 tmp_to_delete = []
-                for ch, img in channel_files.items():
+                for ch, imgs in channel_files.items():
                     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
-                        img.save(tf.name)
-                        tmp_paths[ch] = tf.name
+                        imgs[0].save(tf.name)
+                        inference_tmp_paths[ch] = tf.name
                         tmp_to_delete.append(tf.name)
                 try:
                     with st.spinner("Classifying IF pattern..."):
-                        res = if_model.predict(tmp_paths, top_k=3)
+                        res = if_model.predict(inference_tmp_paths, top_k=3)
                     st.session_state["if_result"] = res
                     # Remove the cached report key so the Clinicopathological tab
                     # regenerates the LLM report with the new IF diagnosis included.
@@ -1730,6 +1767,13 @@ with tab1:
                 mosaic = build_if_mosaic(channel_files)
                 st.image(mosaic, caption="IF Panel Mosaic (sent to LLM reviewer)", use_column_width=True)
 
+                # Build notes about channels that had multiple images averaged
+                notes = [
+                    f"{ch} had {len(imgs)} images \u2014 averaged into one panel cell"
+                    for ch, imgs in channel_files.items() if len(imgs) > 1
+                ]
+                multi_channel_notes = ("Note: " + ". ".join(notes) + ".") if notes else ""
+
                 llm_review_key = f"if_llm_review_{st.session_state.get('_if_upload_key', '')}"
                 if llm_review_key not in st.session_state:
                     with st.spinner("Requesting LLM safety review of IF panel..."):
@@ -1738,6 +1782,7 @@ with tab1:
                             mosaic_b64,
                             res["top_predictions"],
                             res["channels_used"],
+                            multi_channel_notes,
                         )
                     st.session_state[llm_review_key] = review_text
                 else:
