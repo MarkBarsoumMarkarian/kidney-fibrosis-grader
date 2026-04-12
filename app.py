@@ -777,7 +777,12 @@ def get_unified_report(images, all_probs, all_preds, avg_probs, consensus_pred, 
         except Exception:
             pass
     if not groq_key:
-        raise ValueError("GROQ_API_KEY not configured.")
+        raise ValueError(
+            "GROQ_API_KEY not configured. "
+            "Add your Groq API key to Streamlit secrets (GROQ_API_KEY) "
+            "or set it as an environment variable. "
+            "Get a free key at https://console.groq.com"
+        )
 
     n = len(images)
     per_image_summary = ""

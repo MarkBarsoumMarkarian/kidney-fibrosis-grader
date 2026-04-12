@@ -75,10 +75,15 @@ streamlit run app.py
 ### Environment variables
 
 ```bash
-GROQ_API_KEY=your_key_here     # required for LLM report generation
+GROQ_API_KEY=your_key_here          # required for LLM report generation
+OPENROUTER_API_KEY=your_key_here    # optional — IF panel safety review
 ```
 
-Get a free Groq API key at [console.groq.com](https://console.groq.com)
+Get a free Groq API key at [console.groq.com](https://console.groq.com)  
+Get a free OpenRouter API key at [openrouter.ai](https://openrouter.ai)
+
+For local development, copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and fill in your keys.  
+For Streamlit Cloud deployments, add the keys under **Settings → Secrets**.
 
 A `.devcontainer` config is included for VS Code devcontainer or GitHub Codespaces.
 
