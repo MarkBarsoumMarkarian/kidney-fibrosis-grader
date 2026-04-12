@@ -448,10 +448,22 @@ def compute_gradcam(img: Image.Image, target_class: int = None):
 # ── IF Grad-CAM ───────────────────────────────────────────────────────────────
 def compute_if_gradcam(channel_imgs: dict, target_class: int = None):
     """
-    Grad-CAM on the IF classifier (ResNet-50, layer4).
+    Per-channel Grad-CAM on the IF classifier (ResNet-50).
+
+    Uses input gradients (d logit / d input_channel) to produce a unique
+    spatial saliency map for every uploaded IF channel.  Because each input
+    channel's gradient is computed independently, the resulting heatmaps
+    genuinely differ across channels — e.g. IgG will highlight different
+    glomerular regions than C3 or kappa.
+
+    Colour semantics (JET colormap):
+      Dark-red  → regions that strongly drove the model's decision
+      Yellow/green → secondary contributing areas
+      Blue → regions the model largely ignored
+
     channel_imgs: {marker: PIL.Image} for uploaded channels.
     Returns (overlays, target_class, probs)
-      overlays: {marker: PIL.Image with Grad-CAM overlay} for every uploaded channel.
+      overlays: {marker: PIL.Image with per-channel Grad-CAM overlay}
     """
     if_model_obj = load_if_model()
     if if_model_obj is None:
@@ -479,65 +491,49 @@ def compute_if_gradcam(channel_imgs: dict, target_class: int = None):
 
     # First pass without grad to get probs / resolve target_class
     with torch.no_grad():
-        t_ng    = torch.from_numpy(stack).unsqueeze(0).to(device)
-        logits  = model(t_ng)
-        probs   = torch.softmax(logits, dim=1)[0].cpu().numpy()
+        t_ng   = torch.from_numpy(stack).unsqueeze(0).to(device)
+        logits = model(t_ng)
+        probs  = torch.softmax(logits, dim=1)[0].cpu().numpy()
 
     if target_class is None:
         target_class = int(np.argmax(probs))
 
-    # Hook into layer4
-    _act  = {}
-    _grad = {}
+    # Compute per-channel input gradients in a single backward pass.
+    # d(logit[target_class]) / d(input[ch, :, :]) gives a unique (224, 224)
+    # saliency map for each input channel, reflecting that channel's spatial
+    # contribution to the predicted diagnosis.
+    model.zero_grad()
+    t_g = torch.from_numpy(stack).unsqueeze(0).to(device)
+    t_g.requires_grad_(True)
+    logits_g = model(t_g)
+    logits_g[0, target_class].backward()
 
-    def _save_act(m, inp, out):
-        _act['v'] = out.detach()
+    if t_g.grad is None:
+        raise RuntimeError("IF Grad-CAM: input gradients did not flow.")
 
-    def _save_grad(m, gin, gout):
-        _grad['v'] = gout[0].detach()
+    input_grads = t_g.grad[0].detach().cpu().numpy()  # (9, 224, 224)
 
-    target_layer = model.layer4
-    fh = target_layer.register_forward_hook(_save_act)
-    bh = target_layer.register_full_backward_hook(_save_grad)
-
-    try:
-        # No optimizer is used here; zeroing gradients directly on the model
-        # is the standard Grad-CAM pattern when working outside a training loop.
-        model.zero_grad()
-        t_g      = torch.from_numpy(stack).unsqueeze(0).to(device)
-        logits_g = model(t_g)
-        logits_g[0, target_class].backward()
-
-        if 'v' not in _grad or 'v' not in _act:
-            raise RuntimeError("IF Grad-CAM hooks did not fire.")
-
-        weights = _grad['v'].mean(dim=[2, 3], keepdim=True)
-        cam     = (weights * _act['v']).sum(dim=1).squeeze(0)
-        cam     = F.relu(cam)
-
-        cam_min, cam_max = cam.min(), cam.max()
-        if cam_max > cam_min:
-            cam = (cam - cam_min) / (cam_max - cam_min)
-        else:
-            cam = torch.zeros_like(cam)
-
-        cam_np = cam.cpu().numpy()
-    finally:
-        fh.remove()
-        bh.remove()
-
-    # Build per-channel Grad-CAM overlays
+    # Build per-channel overlays using channel-specific gradient saliency maps
     overlays = {}
-    for ch in IF_CHANNELS:
+    for ch_idx, ch in enumerate(IF_CHANNELS):
         if ch not in channel_imgs:
             continue
+
+        # ReLU keeps only positive contributions, then normalise to [0, 1]
+        ch_grad = np.maximum(input_grads[ch_idx], 0)
+        g_min, g_max = ch_grad.min(), ch_grad.max()
+        if g_max > g_min:
+            ch_grad = (ch_grad - g_min) / (g_max - g_min)
+        else:
+            ch_grad = np.zeros_like(ch_grad)
+
         pil_ch        = channel_imgs[ch]
         orig_w, orig_h = pil_ch.size
-        cam_u8        = (cam_np * 255).clip(0, 255).astype(np.uint8)
-        cam_resized   = np.array(
-            Image.fromarray(cam_u8).resize((orig_w, orig_h), Image.BICUBIC)
+        grad_u8       = (ch_grad * 255).clip(0, 255).astype(np.uint8)
+        grad_resized  = np.array(
+            Image.fromarray(grad_u8).resize((orig_w, orig_h), Image.BICUBIC)
         ).astype(np.float32) / 255.0
-        heatmap_u8    = (cam_resized * 255).astype(np.uint8)
+        heatmap_u8    = (grad_resized * 255).astype(np.uint8)
         heatmap_color = cv2.applyColorMap(heatmap_u8, cv2.COLORMAP_JET)
         heatmap_rgb   = cv2.cvtColor(heatmap_color, cv2.COLOR_BGR2RGB)
         orig_rgb      = np.array(pil_ch.convert("RGB"))
@@ -815,7 +811,31 @@ If vascular changes are prominent, address that. {"If IF positivity suggests an 
     }
     response = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=90)
     response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
+    raw = response.json()["choices"][0]["message"]["content"]
+    return _clean_report_text(raw)
+
+
+def _clean_report_text(text: str) -> str:
+    """Remove em dashes, en dashes, and markdown # headers from LLM report text.
+
+    Em dashes (—) and en dashes (–) are replaced with a plain hyphen-minus.
+    Lines beginning with one or more '#' characters (Markdown headings) have
+    the leading '#' symbols stripped so the text is rendered as plain prose
+    or as the **bold** heading style used elsewhere in the report.
+    """
+    # Replace em dash and en dash with a plain hyphen
+    text = text.replace("\u2014", "-").replace("\u2013", "-")
+    # Replace triple/double dashes that LLMs sometimes emit
+    text = re.sub(r"---+", "-", text)
+
+    # Strip leading '#' heading markers from each line, keeping the heading text.
+    # e.g. "## Findings" → "**Findings**" so it still renders as a bold header.
+    def _strip_hashes(m):
+        return f"**{m.group(1).strip()}**"
+
+    text = re.sub(r"^#{1,6}\s+(.*)", _strip_hashes, text, flags=re.MULTILINE)
+
+    return text
 
 
 # ── PDF Report Generation ──────────────────────────────────────────────────────
@@ -841,7 +861,8 @@ def _latin1(text: str) -> str:
 
 def generate_pdf_report(images, overlay_images, all_probs, all_preds,
                         avg_probs, consensus_pred, consensus_conf, report_text,
-                        if_result=None, if_channel_imgs=None):
+                        if_result=None, if_channel_imgs=None,
+                        if_gradcam_overlays=None):
     from fpdf import FPDF
     from datetime import date as _date
     import html as _html
@@ -1055,7 +1076,117 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
              ln=0, align="C")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # PAGE 2 — AI Report text
+    # PAGE 2 — IF Channel Images with Grad-CAM (if available) — before AI report
+    # ══════════════════════════════════════════════════════════════════════════
+    if if_channel_imgs:
+        uploaded_chs = [ch for ch in IF_CHANNELS if ch in if_channel_imgs]
+        if uploaded_chs:
+            has_if_gcam = bool(if_gradcam_overlays)
+
+            pdf.add_page()
+
+            # Header bar
+            page2_title = (
+                "IF Channel Images & Grad-CAM Activation Maps"
+                if has_if_gcam else "IF Channel Images"
+            )
+            pdf.set_fill_color(*C_ACCENT)
+            pdf.rect(pdf.l_margin, pdf.t_margin, W, 9, style="F")
+            pdf.set_font("Helvetica", style="B", size=10)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 1.5)
+            pdf.cell(W, 6, page2_title, ln=0)
+
+            if has_if_gcam:
+                # Colour-scale legend
+                pdf.set_font("Helvetica", size=6)
+                pdf.set_text_color(199, 218, 255)
+                pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 5.5)
+                pdf.cell(W - 8, 3,
+                         "Dark-red = peak attention  |  Yellow/green = secondary  |  Blue = ignored",
+                         ln=0, align="R")
+
+            y_if = pdf.t_margin + 13
+
+            if has_if_gcam:
+                # With Grad-CAM: 2 channels per row, each as original | overlay pair
+                cols   = 2
+                gap    = 4
+                pair_w = (W - (cols - 1) * gap) / cols
+                img_w  = (pair_w - 2) / 2
+                img_h  = img_w * 0.9
+                row_h  = 4 + img_h + 3 + 3   # label + image + subcaption + gap
+            else:
+                # Without Grad-CAM: 3 channels per row, single image
+                cols   = min(3, len(uploaded_chs))
+                gap    = 3
+                pair_w = (W - (cols - 1) * gap) / cols
+                img_w  = pair_w
+                img_h  = pair_w * 0.9
+                row_h  = 4 + img_h + 8         # label + image + gap
+
+            col_idx = 0
+
+            def _new_if_page(title):
+                nonlocal y_if
+                pdf.add_page()
+                pdf.set_fill_color(*C_ACCENT)
+                pdf.rect(pdf.l_margin, pdf.t_margin, W, 9, style="F")
+                pdf.set_font("Helvetica", style="B", size=10)
+                pdf.set_text_color(255, 255, 255)
+                pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 1.5)
+                pdf.cell(W, 6, title, ln=0)
+                y_if = pdf.t_margin + 13
+
+            for ch in uploaded_chs:
+                # Start of a new row: check if there's enough space, else new page
+                if col_idx == 0 and y_if + row_h > pdf.h - 12:
+                    _new_if_page(page2_title + " (continued)")
+
+                x_cell = pdf.l_margin + col_idx * (pair_w + gap)
+
+                # Channel label (spans the full pair width)
+                pdf.set_font("Helvetica", size=6.5)
+                pdf.set_text_color(*C_MID)
+                pdf.set_xy(x_cell, y_if)
+                pdf.cell(pair_w, 4, _latin1(ch), ln=0, align="C")
+
+                # Original image
+                ch_bytes = _pil_to_jpeg_bytes(if_channel_imgs[ch])
+                pdf.image(io.BytesIO(ch_bytes), x=x_cell, y=y_if + 4, w=img_w, h=img_h)
+
+                if has_if_gcam and if_gradcam_overlays.get(ch) is not None:
+                    # Grad-CAM overlay image
+                    gcam_bytes = _pil_to_jpeg_bytes(if_gradcam_overlays[ch])
+                    pdf.image(io.BytesIO(gcam_bytes),
+                              x=x_cell + img_w + 2, y=y_if + 4,
+                              w=img_w, h=img_h)
+                    # Sub-captions
+                    pdf.set_font("Helvetica", size=5.5)
+                    pdf.set_text_color(*C_LIGHT)
+                    pdf.set_xy(x_cell, y_if + 4 + img_h + 0.5)
+                    pdf.cell(img_w, 3, "Original", ln=0, align="C")
+                    pdf.set_xy(x_cell + img_w + 2, y_if + 4 + img_h + 0.5)
+                    pdf.cell(img_w, 3, "Grad-CAM", ln=0, align="C")
+
+                col_idx += 1
+                if col_idx >= cols:
+                    col_idx = 0
+                    y_if += row_h
+
+            # Footer on IF page
+            pdf.set_draw_color(*C_BORDER)
+            pdf.set_line_width(0.2)
+            pdf.line(pdf.l_margin, pdf.h - 9, pdf.l_margin + W, pdf.h - 9)
+            pdf.set_font("Helvetica", size=5.5)
+            pdf.set_text_color(*C_LIGHT)
+            pdf.set_xy(pdf.l_margin, pdf.h - 8)
+            pdf.cell(W, 4,
+                     "For research use only. Not validated for clinical diagnosis. Always consult a qualified pathologist.",
+                     ln=0, align="C")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PAGE 3 — AI Report text (after IF images)
     # ══════════════════════════════════════════════════════════════════════════
     pdf.add_page()
 
@@ -1097,7 +1228,7 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
             pdf.multi_cell(W, 4.5, _latin1(body), align="L")
             pdf.ln(0.5)
 
-    # Footer on page 2
+    # Footer on AI report page
     pdf.set_draw_color(*C_BORDER)
     pdf.set_line_width(0.2)
     pdf.line(pdf.l_margin, pdf.h - 9, pdf.l_margin + W, pdf.h - 9)
@@ -1107,70 +1238,6 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
     pdf.cell(W, 4,
              "For research use only. Not validated for clinical diagnosis. Always consult a qualified pathologist.",
              ln=0, align="C")
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # PAGE 3 — IF Channel Images (if available)
-    # ══════════════════════════════════════════════════════════════════════════
-    if if_channel_imgs:
-        uploaded_chs = [ch for ch in IF_CHANNELS if ch in if_channel_imgs]
-        if uploaded_chs:
-            pdf.add_page()
-
-            # Header bar
-            pdf.set_fill_color(*C_ACCENT)
-            pdf.rect(pdf.l_margin, pdf.t_margin, W, 9, style="F")
-            pdf.set_font("Helvetica", style="B", size=10)
-            pdf.set_text_color(255, 255, 255)
-            pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 1.5)
-            pdf.cell(W, 6, "IF Channel Images", ln=0)
-
-            y_if = pdf.t_margin + 13
-
-            # Lay out images in a grid: up to 3 columns
-            cols = min(3, len(uploaded_chs))
-            cell_w = (W - (cols - 1) * 3) / cols
-            cell_h = cell_w * 0.9
-            col_idx = 0
-
-            for ch in uploaded_chs:
-                # Start of a new row: check if there's enough space, else new page
-                if col_idx == 0 and y_if + cell_h + 8 > pdf.h - 12:
-                    pdf.add_page()
-                    pdf.set_fill_color(*C_ACCENT)
-                    pdf.rect(pdf.l_margin, pdf.t_margin, W, 9, style="F")
-                    pdf.set_font("Helvetica", style="B", size=10)
-                    pdf.set_text_color(255, 255, 255)
-                    pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 1.5)
-                    pdf.cell(W, 6, "IF Channel Images (continued)", ln=0)
-                    y_if = pdf.t_margin + 13
-
-                x_cell = pdf.l_margin + col_idx * (cell_w + 3)
-
-                # Caption
-                pdf.set_font("Helvetica", size=6.5)
-                pdf.set_text_color(*C_MID)
-                pdf.set_xy(x_cell, y_if)
-                pdf.cell(cell_w, 4, _latin1(ch), ln=0, align="C")
-
-                # Image
-                ch_bytes = _pil_to_jpeg_bytes(if_channel_imgs[ch])
-                pdf.image(io.BytesIO(ch_bytes), x=x_cell, y=y_if + 4, w=cell_w, h=cell_h)
-
-                col_idx += 1
-                if col_idx >= cols:
-                    col_idx = 0
-                    y_if += cell_h + 8
-
-            # Footer on IF page
-            pdf.set_draw_color(*C_BORDER)
-            pdf.set_line_width(0.2)
-            pdf.line(pdf.l_margin, pdf.h - 9, pdf.l_margin + W, pdf.h - 9)
-            pdf.set_font("Helvetica", size=5.5)
-            pdf.set_text_color(*C_LIGHT)
-            pdf.set_xy(pdf.l_margin, pdf.h - 8)
-            pdf.cell(W, 4,
-                     "For research use only. Not validated for clinical diagnosis. Always consult a qualified pathologist.",
-                     ln=0, align="C")
 
     return bytes(pdf.output())
 
@@ -1619,6 +1686,21 @@ with tab2:
                             if_result=st.session_state.get("if_result"),
                             if_channel_imgs=st.session_state.get("if_channel_imgs"),
                         )
+
+                        # Auto-compute IF Grad-CAM for the PDF (per-channel heatmaps)
+                        _if_ch_imgs_pdf = st.session_state.get("if_channel_imgs")
+                        if_gradcam_overlays = None
+                        if _if_ch_imgs_pdf:
+                            try:
+                                _if_ov, _if_pc, _if_pb = compute_if_gradcam(
+                                    _if_ch_imgs_pdf, target_class=None
+                                )
+                                if_gradcam_overlays = _if_ov
+                                # Update Grad-CAM tab cache so user doesn't need to re-run
+                                st.session_state["if_gcam_cache"] = (_if_ov, _if_pc, _if_pb)
+                            except Exception:
+                                pass  # Grad-CAM unavailable; PDF falls back to originals
+
                         pdf_bytes = generate_pdf_report(
                             images=st.session_state.imgs,
                             overlay_images=overlay_images,
@@ -1630,6 +1712,7 @@ with tab2:
                             report_text=report,
                             if_result=st.session_state.get("if_result"),
                             if_channel_imgs=st.session_state.get("if_channel_imgs"),
+                            if_gradcam_overlays=if_gradcam_overlays,
                         )
                         st.session_state.report_key      = _report_key
                         st.session_state.report_text     = report
