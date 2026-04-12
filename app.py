@@ -283,7 +283,7 @@ CLASS_COLORS = ["#16a34a", "#d97706", "#ea580c", "#dc2626"]
 CLASS_BG     = ["#0f2318", "#231a08", "#231208", "#230e0e"]
 CLASS_BORDER = ["#1a4a2a", "#4a3510", "#4a2010", "#4a1010"]
 CLASS_SHORT  = ["Minimal (<10%)", "Mild (10–25%)", "Moderate (25–50%)", "Severe (>50%)"]
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 # Thumbnail size used to generate stable MD5 fingerprints for IF channel images
 _IF_HASH_THUMB_SIZE = (4, 4)
 
@@ -797,19 +797,22 @@ def compute_stain_metrics(img: Image.Image):
 def get_unified_report(images, all_probs, all_preds, avg_probs, consensus_pred, consensus_conf,
                        overlay_images=None, if_result=None, if_channel_imgs=None):
     """
-    Llama 4 Scout: sees trichrome images + Grad-CAM overlays + IF channel images,
+    Llama 4 Scout via OpenRouter: sees trichrome images + Grad-CAM overlays + IF channel images,
     then returns one cohesive multimodal nephropathological report.
     """
-    groq_key = os.environ.get("GROQ_API_KEY", "")
-    if not groq_key:
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not api_key:
         try:
-            groq_key = st.secrets["GROQ_API_KEY"]
+            api_key = st.secrets["OPENROUTER_API_KEY"]
         except Exception:
             pass
-    if not groq_key:
-        groq_key = st.session_state.get("groq_api_key_input", "")
-    if not groq_key:
-        raise ValueError("GROQ_API_KEY not configured.")
+    if not api_key:
+        raise ValueError(
+            "OPENROUTER_API_KEY not configured. "
+            "Add your OpenRouter API key to Streamlit secrets (OPENROUTER_API_KEY) "
+            "or set it as an environment variable. "
+            "Get a free key at https://openrouter.ai"
+        )
 
     n = len(images)
     per_image_summary = ""
@@ -957,7 +960,7 @@ If vascular changes are prominent, address that. {"If IF positivity suggests an 
 
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {groq_key}"
+        "Authorization": f"Bearer {api_key}"
     }
     payload = {
         "model": "meta-llama/llama-4-scout-17b-16e-instruct",
@@ -965,7 +968,7 @@ If vascular changes are prominent, address that. {"If IF positivity suggests an 
         "max_tokens": 1800,
         "temperature": 0.3,
     }
-    response = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=90)
+    response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=90)
     response.raise_for_status()
     raw = response.json()["choices"][0]["message"]["content"]
     return _clean_report_text(raw)
@@ -1957,9 +1960,7 @@ with tab2:
                         st.session_state.report_pdf      = pdf_bytes
                     except requests.exceptions.HTTPError as e:
                         if e.response.status_code == 401:
-                            st.session_state.pop("groq_api_key_input", None)
-                            st.session_state.pop("groq_key_used", None)
-                            st.error("Invalid Groq API key. Please check your key and try again.")
+                            st.error("OpenRouter API key missing. Add OPENROUTER_API_KEY to Streamlit secrets.")
                         elif e.response.status_code == 429:
                             st.warning("Rate limit reached. Please wait a moment and retry.")
                         else:
