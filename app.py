@@ -6,6 +6,7 @@ from PIL import Image, ImageDraw, ImageFont
 import torchvision.transforms as transforms
 import sys, os
 import re
+import time
 import requests
 import base64
 import io
@@ -718,23 +719,33 @@ def llm_review_if_panel(mosaic_b64: str, top_predictions: list, channels_used: l
             "max_tokens": 512,
             "temperature": 0.3,
         }
-        try:
-            resp = requests.post(
-                OPENROUTER_API_URL,
-                headers=headers,
-                json=payload,
-                timeout=60,
-            )
-            if resp.status_code in (404, 529):
-                last_err = f"{model_id} unavailable ({resp.status_code})"
-                continue
-            if resp.status_code == 401:
-                return "⚠️ LLM review failed: OpenRouter API key is invalid or missing."
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"].strip()
-        except Exception as exc:
-            last_err = str(exc)
-            continue
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    OPENROUTER_API_URL,
+                    headers=headers,
+                    json=payload,
+                    timeout=60,
+                )
+                if resp.status_code == 401:
+                    return "⚠️ LLM review failed: OpenRouter API key is invalid or missing."
+                if resp.status_code == 429:
+                    wait = 2 ** attempt
+                    time.sleep(wait)
+                    continue
+                if resp.status_code in (404, 529):
+                    last_err = f"{model_id} unavailable ({resp.status_code})"
+                    break
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"].strip()
+            except requests.exceptions.Timeout:
+                last_err = f"{model_id} timed out"
+                break
+            except Exception as exc:
+                last_err = str(exc)
+                break
+        else:
+            last_err = f"{model_id} hit rate limit after 3 retries"
     return f"⚠️ LLM review failed: all models unavailable. Last error: {last_err}"
 def _get_od(img_np: np.ndarray):
     """Convert uint8 RGB image to optical density (OD) space."""
@@ -1009,24 +1020,34 @@ If vascular changes are prominent, address that. {"If IF positivity suggests an 
     last_err = None
     for model_id in REPORT_MODELS:
         payload = {**base_payload, "model": model_id}
-        try:
-            response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=90)
-            if response.status_code == 401:
-                raise ValueError("OpenRouter API key is invalid or missing.")
-            if response.status_code in (404, 529):
-                last_err = (
-                    f"Model not found or unavailable on OpenRouter: {model_id}. "
-                    f"Status: {response.status_code}. Body: {response.text[:300]}"
-                )
-                continue
-            response.raise_for_status()
-            raw = response.json()["choices"][0]["message"]["content"]
-            return _clean_report_text(raw)
-        except ValueError:
-            raise
-        except Exception as exc:
-            last_err = str(exc)
-            continue
+        for attempt in range(3):
+            try:
+                response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=90)
+                if response.status_code == 401:
+                    raise ValueError("OpenRouter API key is invalid or missing.")
+                if response.status_code == 429:
+                    wait = 2 ** attempt
+                    time.sleep(wait)
+                    continue
+                if response.status_code in (404, 529):
+                    last_err = (
+                        f"Model not found or unavailable on OpenRouter: {model_id}. "
+                        f"Status: {response.status_code}. Body: {response.text[:300]}"
+                    )
+                    break
+                response.raise_for_status()
+                raw = response.json()["choices"][0]["message"]["content"]
+                return _clean_report_text(raw)
+            except ValueError:
+                raise
+            except requests.exceptions.Timeout:
+                last_err = f"{model_id} timed out"
+                break
+            except Exception as exc:
+                last_err = str(exc)
+                break
+        else:
+            last_err = f"{model_id} hit rate limit after 3 retries"
     raise ValueError(f"All report models failed. Last error: {last_err}")
 
 
