@@ -1093,7 +1093,7 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
             pdf.set_font("Helvetica", style="B", size=9)
             pdf.set_text_color(*C_ACCENT)
             pdf.set_x(pdf.l_margin)
-            pdf.cell(W, 5.5, _latin1(header), ln=1)
+            pdf.cell(W, 5.5, _latin1(header), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.set_draw_color(*C_BORDER)
             pdf.set_line_width(0.2)
             pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + W * 0.3, pdf.get_y())
