@@ -669,13 +669,25 @@ def get_api_keys() -> list:
             keys_raw = st.secrets.get("OPENROUTER_API_KEYS", "")
         except Exception:
             pass
+
     if keys_raw:
+        # Strip any surrounding whitespace or quotes HF might add
+        keys_raw = keys_raw.strip().strip("'\"")
         try:
             keys = json.loads(keys_raw)
-            random.shuffle(keys)
-            return keys
+            if isinstance(keys, list):
+                # Strip each individual key of any whitespace/quotes
+                keys = [k.strip().strip("'\"") for k in keys if k]
+                random.shuffle(keys)
+                return [k for k in keys if k.startswith("sk-")]
         except Exception:
-            pass
+            # Maybe it's comma-separated plain text, not JSON
+            keys = [k.strip().strip("'\"") for k in keys_raw.split(",") if k.strip()]
+            keys = [k for k in keys if k.startswith("sk-")]
+            if keys:
+                random.shuffle(keys)
+                return keys
+
     # Fall back to single key
     single = os.environ.get("OPENROUTER_API_KEY", "")
     if not single:
@@ -683,7 +695,7 @@ def get_api_keys() -> list:
             single = st.secrets.get("OPENROUTER_API_KEY", "")
         except Exception:
             pass
-    return [single] if single else []
+    return [single.strip()] if single else []
 
 
 def llm_review_if_panel(mosaic_b64: str, top_predictions: list, channels_used: list,
