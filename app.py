@@ -644,19 +644,6 @@ def compute_stain_metrics(img: Image.Image):
 
 
 # ── LLM Report ─────────────────────────────────────────────────────────────────
-GROQ_MAX_IMAGES = 5   # Groq Llama 4 Scout hard limit: 5 images per request
-
-
-def _encode_image_for_api(img: "Image.Image", max_px: int = 1024, quality: int = 80) -> str:
-    """Resize *img* so its longest side ≤ *max_px*, then return a base-64 JPEG string."""
-    if max(img.width, img.height) > max_px:
-        ratio = max_px / max(img.width, img.height)
-        img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.LANCZOS)
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=quality)
-    return base64.b64encode(buf.getvalue()).decode("utf-8")
-
-
 def get_unified_report(images, all_probs, all_preds, avg_probs, consensus_pred, consensus_conf,
                        overlay_images=None, if_result=None, if_channel_imgs=None):
     """
@@ -784,33 +771,37 @@ If vascular changes are prominent, address that. {"If IF positivity suggests an 
 2-3 sentences for the patient. No jargon."""
 
     content_parts = [{"type": "text", "text": prompt}]
-    img_count = 0
 
-    def _add_image(pil_img, quality=80):
-        nonlocal img_count
-        if img_count >= GROQ_MAX_IMAGES:
-            return False
-        b64 = _encode_image_for_api(pil_img, max_px=1024, quality=quality)
+    # Trichrome images + Grad-CAM overlays
+    for i, img in enumerate(images):
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
         content_parts.append({
             "type": "image_url",
             "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
         })
-        img_count += 1
-        return True
-
-    # Trichrome images + Grad-CAM overlays (highest priority)
-    for i, img in enumerate(images):
-        _add_image(img, quality=85)
         if overlay_images and i < len(overlay_images) and overlay_images[i] is not None:
-            _add_image(overlay_images[i], quality=85)
+            buf_cam = io.BytesIO()
+            overlay_images[i].save(buf_cam, format="JPEG", quality=85)
+            b64_cam = base64.b64encode(buf_cam.getvalue()).decode("utf-8")
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64_cam}"}
+            })
 
-    # IF channel images (if available and slots remain)
+    # IF channel images (if available)
     if has_if and if_channel_imgs:
         for ch in IF_CHANNELS:
             if ch not in if_channel_imgs:
                 continue
-            if not _add_image(if_channel_imgs[ch], quality=80):
-                break  # image cap reached
+            buf_if = io.BytesIO()
+            if_channel_imgs[ch].save(buf_if, format="JPEG", quality=80)
+            b64_if = base64.b64encode(buf_if.getvalue()).decode("utf-8")
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64_if}"}
+            })
 
     headers = {
         "Content-Type": "application/json",
@@ -1585,11 +1576,7 @@ with tab2:
                         elif e.response.status_code == 429:
                             st.warning("Rate limit reached. Please wait a moment and retry.")
                         else:
-                            try:
-                                groq_msg = e.response.json().get("error", {}).get("message", str(e))
-                            except Exception:
-                                groq_msg = str(e)
-                            st.error(f"Report unavailable: {groq_msg}")
+                            st.error(f"Report unavailable: {str(e)}")
                     except ValueError as e:
                         st.error(str(e))
                     except Exception as e:
