@@ -120,7 +120,7 @@ class IFClassifier:
         return model.to(self.device)
 
     def _load(self, path: Union[str, Path]):
-        ckpt  = torch.load(path, map_location=self.device)
+        ckpt  = torch.load(path, map_location=self.device, weights_only=False)
         state = ckpt.get('model_state_dict', ckpt)
         # If checkpoint recorded classes/channels, use them
         if isinstance(ckpt, dict) and 'classes' in ckpt:
