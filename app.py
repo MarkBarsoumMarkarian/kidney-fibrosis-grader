@@ -30,12 +30,13 @@ if not os.path.exists(IF_MODEL_PATH):
     print('Done.')
 
 try:
-    from inference import IFClassifier, IF_CHANNELS, CLASS_DISPLAY as IF_CLASS_DISPLAY
+    from inference import IFClassifier, IF_CHANNELS, IF_CLASSES, CLASS_DISPLAY as IF_CLASS_DISPLAY
     _IF_MODULE_OK = True
 except Exception as _if_import_err:
     print(f"WARNING: Could not import inference module: {_if_import_err}")
     IFClassifier    = None
     IF_CHANNELS     = ['IgG', 'IgA', 'IgM', 'C3', 'C1q', 'kappa', 'lambda', 'fibrinogen', 'albumin']
+    IF_CLASSES      = []
     IF_CLASS_DISPLAY = {}
     _IF_MODULE_OK   = False
 
@@ -289,6 +290,20 @@ CLASS_BG     = ["#0f2318", "#231a08", "#231208", "#230e0e"]
 CLASS_BORDER = ["#1a4a2a", "#4a3510", "#4a2010", "#4a1010"]
 CLASS_SHORT  = ["Minimal (<10%)", "Mild (10–25%)", "Moderate (25–50%)", "Severe (>50%)"]
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+# Ordered fallback list for the full clinicopathological report (multimodal)
+REPORT_MODELS = [
+    "meta-llama/llama-4-maverick:free",
+    "meta-llama/llama-4-scout:free",
+    "google/gemma-4-31b-it:free",
+]
+
+# Ordered fallback list for the IF panel safety review
+IF_REVIEW_MODELS = [
+    "google/gemma-4-31b-it:free",
+    "meta-llama/llama-4-scout:free",
+    "meta-llama/llama-4-maverick:free",
+]
 # Thumbnail size used to generate stable MD5 fingerprints for IF channel images
 _IF_HASH_THUMB_SIZE = (4, 4)
 
@@ -450,7 +465,114 @@ def compute_gradcam(img: Image.Image, target_class: int = None):
     return heatmap_rgb, overlay, target_class, probs, cam_resized
 
 
-# ── IF Mosaic & OpenRouter LLM Review ────────────────────────────────────────
+
+# ── IF Grad-CAM ────────────────────────────────────────────────────────────────
+
+def compute_if_gradcam(
+    channel_img: Image.Image,
+    channel_name: str,
+    predicted_class_idx: int,
+) -> "Image.Image | None":
+    """
+    Compute a Grad-CAM activation overlay for a single IF channel image using the
+    IF ResNet-50 classifier (IFClassifier).
+
+    The channel is placed at its correct 9-channel position; all other channels are
+    zero-filled — exactly as ``IFClassifier._build_stack`` does for inference.
+    Targets ``model.layer4`` (last residual block) for gradient attribution.
+
+    Args:
+        channel_img:         PIL image for the single IF channel.
+        channel_name:        Name of the IF channel (e.g. ``"IgA"``).
+        predicted_class_idx: Class index returned by the classifier.
+
+    Returns:
+        PIL overlay image (same size as *channel_img*), or ``None`` on failure.
+    """
+    clf = load_if_model()
+    if clf is None:
+        return None
+    if channel_name not in IF_CHANNELS:
+        return None
+
+    device = clf.device
+    size = 224
+
+    # Build 9-channel tensor — only the target channel is populated.
+    arr = np.array(
+        channel_img.convert("L").resize((size, size), Image.BILINEAR),
+        dtype=np.float32,
+    ) / 255.0
+    nz = arr[arr > 0.05]
+    if len(nz) > 50:
+        arr = (arr - nz.mean()) / (nz.std() + 1e-6)
+
+    planes = [
+        arr if ch == channel_name else np.zeros((size, size), dtype=np.float32)
+        for ch in IF_CHANNELS
+    ]
+    tensor = torch.from_numpy(np.stack(planes, axis=0)).unsqueeze(0).to(device)
+
+    # Locate layer4 in the ResNet-50 backbone.
+    target_layer = None
+    for name, m in clf.model.named_modules():
+        if name == "layer4" and isinstance(m, torch.nn.Sequential):
+            target_layer = m
+            break
+    if target_layer is None:
+        return None
+
+    activations_ref: list = [None]
+    gradients_ref: list = [None]
+
+    def _save_act(module, inp, out):
+        activations_ref[0] = out.detach()
+
+    def _save_grad(module, grad_in, grad_out):
+        gradients_ref[0] = grad_out[0].detach()
+
+    fwd_h = target_layer.register_forward_hook(_save_act)
+    bwd_h = target_layer.register_full_backward_hook(_save_grad)
+    try:
+        clf.model.eval()
+        clf.model.zero_grad()
+        with torch.enable_grad():
+            output = clf.model(tensor)
+            score = output[0, predicted_class_idx]
+            score.backward()
+    finally:
+        fwd_h.remove()
+        bwd_h.remove()
+
+    if activations_ref[0] is None or gradients_ref[0] is None:
+        return None
+
+    weights = gradients_ref[0].mean(dim=[2, 3], keepdim=True)
+    cam = (weights * activations_ref[0]).sum(dim=1).squeeze(0)
+    cam = F.relu(cam)
+    cam_min, cam_max = cam.min(), cam.max()
+    if cam_max > cam_min:
+        cam = (cam - cam_min) / (cam_max - cam_min)
+    else:
+        cam = torch.zeros_like(cam)
+
+    cam_np = cam.cpu().numpy()
+    orig_w, orig_h = channel_img.size
+    cam_u8 = (cam_np * 255).clip(0, 255).astype(np.uint8)
+    cam_resized = (
+        np.array(
+            Image.fromarray(cam_u8).resize((orig_w, orig_h), Image.BICUBIC)
+        ).astype(np.float32)
+        / 255.0
+    )
+
+    heatmap_u8 = (cam_resized * 255).astype(np.uint8)
+    heatmap_color = cv2.applyColorMap(heatmap_u8, cv2.COLORMAP_JET)
+    heatmap_rgb = cv2.cvtColor(heatmap_color, cv2.COLOR_BGR2RGB)
+
+    orig_np = np.array(channel_img.convert("RGB"))
+    overlay = cv2.addWeighted(orig_np, 0.55, heatmap_rgb, 0.45, 0)
+    return Image.fromarray(overlay)
 
 _MOSAIC_CELL = 224   # px per cell
 _MOSAIC_COLS = 3
@@ -568,42 +690,52 @@ def llm_review_if_panel(mosaic_b64: str, top_predictions: list, channels_used: l
         "Be concise, clinically focused, and use standard nephropathology terminology."
     )
 
-    payload = {
-        "model": "google/gemma-4-31b-it:free",
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{mosaic_b64}"},
-                    },
-                    {
-                        "type": "text",
-                        "text": prompt_text,
-                    },
-                ],
-            }
-        ],
-        "max_tokens": 512,
-        "temperature": 0.3,
-    }
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{mosaic_b64}"},
+                },
+                {
+                    "type": "text",
+                    "text": prompt_text,
+                },
+            ],
+        }
+    ]
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
 
-    try:
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=60,
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"].strip()
-    except Exception as exc:
-        return f"⚠️ LLM review failed: {exc}"
+    last_err = None
+    for model_id in IF_REVIEW_MODELS:
+        payload = {
+            "model": model_id,
+            "messages": messages,
+            "max_tokens": 512,
+            "temperature": 0.3,
+        }
+        try:
+            resp = requests.post(
+                OPENROUTER_API_URL,
+                headers=headers,
+                json=payload,
+                timeout=60,
+            )
+            if resp.status_code in (404, 529):
+                last_err = f"{model_id} unavailable ({resp.status_code})"
+                continue
+            if resp.status_code == 401:
+                return "⚠️ LLM review failed: OpenRouter API key is invalid or missing."
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"].strip()
+        except Exception as exc:
+            last_err = str(exc)
+            continue
+    return f"⚠️ LLM review failed: all models unavailable. Last error: {last_err}"
 def _get_od(img_np: np.ndarray):
     """Convert uint8 RGB image to optical density (OD) space."""
     img = np.maximum(img_np.astype(np.float32) / 255.0, 1e-6)
@@ -868,16 +1000,34 @@ If vascular changes are prominent, address that. {"If IF positivity suggests an 
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}"
     }
-    payload = {
-        "model": "meta-llama/llama-4-maverick-17b-128e-instruct:free",
+    base_payload = {
         "messages": [{"role": "user", "content": content_parts}],
         "max_tokens": 1800,
         "temperature": 0.3,
     }
-    response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=90)
-    response.raise_for_status()
-    raw = response.json()["choices"][0]["message"]["content"]
-    return _clean_report_text(raw)
+
+    last_err = None
+    for model_id in REPORT_MODELS:
+        payload = {**base_payload, "model": model_id}
+        try:
+            response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=90)
+            if response.status_code == 401:
+                raise ValueError("OpenRouter API key is invalid or missing.")
+            if response.status_code in (404, 529):
+                last_err = (
+                    f"Model not found or unavailable on OpenRouter: {model_id}. "
+                    f"Status: {response.status_code}. Body: {response.text[:300]}"
+                )
+                continue
+            response.raise_for_status()
+            raw = response.json()["choices"][0]["message"]["content"]
+            return _clean_report_text(raw)
+        except ValueError:
+            raise
+        except Exception as exc:
+            last_err = str(exc)
+            continue
+    raise ValueError(f"All report models failed. Last error: {last_err}")
 
 
 def _clean_report_text(text: str) -> str:
@@ -1141,7 +1291,7 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
              ln=0, align="C")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # PAGE 2 — IF Channel Images with Grad-CAM (if available) — before AI report
+    # PAGE 2 — IF Panel Mosaic & Grad-CAM (if available) — before AI report
     # ══════════════════════════════════════════════════════════════════════════
     if if_channel_imgs:
         uploaded_chs = [ch for ch in IF_CHANNELS if ch in if_channel_imgs]
@@ -1152,8 +1302,8 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
 
             # Header bar
             page2_title = (
-                "IF Channel Images & Grad-CAM Activation Maps"
-                if has_if_gcam else "IF Channel Images"
+                "IF Panel Mosaic & Grad-CAM Activation Maps"
+                if has_if_gcam else "IF Panel Mosaic"
             )
             pdf.set_fill_color(*C_ACCENT)
             pdf.rect(pdf.l_margin, pdf.t_margin, W, 9, style="F")
@@ -1162,82 +1312,90 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
             pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 1.5)
             pdf.cell(W, 6, page2_title, ln=0)
 
-            if has_if_gcam:
-                # Colour-scale legend
-                pdf.set_font("Helvetica", size=6)
-                pdf.set_text_color(199, 218, 255)
-                pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 5.5)
-                pdf.cell(W - 8, 3,
-                         "Dark-red = peak attention  |  Yellow/green = secondary  |  Blue = ignored",
-                         ln=0, align="R")
-
             y_if = pdf.t_margin + 13
 
+            # ── Mosaic image (replaces individual channel grid) ───────────────
+            mosaic_dict_pdf = {ch: [if_channel_imgs[ch]] for ch in uploaded_chs}
+            mosaic_pdf = build_if_mosaic(mosaic_dict_pdf)
+            # Scale mosaic to fit page width (max ~130 mm to leave breathing room)
+            mosaic_max_w = min(W, 130.0)
+            mosaic_aspect = mosaic_pdf.height / mosaic_pdf.width
+            mosaic_w = mosaic_max_w
+            mosaic_h = mosaic_w * mosaic_aspect
+            # If mosaic is too tall, constrain by height instead
+            available_h = pdf.h - y_if - 14  # leave footer room
+            if mosaic_h > available_h:
+                mosaic_h = available_h
+                mosaic_w = mosaic_h / mosaic_aspect
+
+            mosaic_x = pdf.l_margin + (W - mosaic_w) / 2  # centred
+            mosaic_bytes = _pil_to_jpeg_bytes(mosaic_pdf, max_px=1200)
+            pdf.image(io.BytesIO(mosaic_bytes), x=mosaic_x, y=y_if, w=mosaic_w, h=mosaic_h)
+
+            # Sub-caption
+            pdf.set_font("Helvetica", size=6)
+            pdf.set_text_color(*C_LIGHT)
+            pdf.set_xy(pdf.l_margin, y_if + mosaic_h + 1)
+            pdf.cell(W, 3,
+                     _latin1(f"Channels: {', '.join(uploaded_chs)}  |  "
+                             "Black cells = missing channels (zero-filled)"),
+                     ln=1, align="C")
+
+            y_if = pdf.get_y() + 4
+
+            # ── IF Grad-CAM section (top 1-2 channels) ───────────────────────
             if has_if_gcam:
-                # With Grad-CAM: 2 channels per row, each as original | overlay pair
-                cols   = 2
-                gap    = 4
-                pair_w = (W - (cols - 1) * gap) / cols
-                img_w  = (pair_w - 2) / 2
-                img_h  = img_w * 0.9
-                row_h  = 4 + img_h + 3 + 3   # label + image + subcaption + gap
-            else:
-                # Without Grad-CAM: 3 channels per row, single image
-                cols   = min(3, len(uploaded_chs))
-                gap    = 3
-                pair_w = (W - (cols - 1) * gap) / cols
-                img_w  = pair_w
-                img_h  = pair_w * 0.9
-                row_h  = 4 + img_h + 8         # label + image + gap
+                gcam_channels = [ch for ch in IF_CHANNELS if ch in if_gradcam_overlays]
+                if gcam_channels:
+                    # Section sub-header
+                    pdf.set_font("Helvetica", style="B", size=8)
+                    pdf.set_text_color(*C_ACCENT)
+                    pdf.set_xy(pdf.l_margin, y_if)
+                    pdf.cell(W, 5, "IF Grad-CAM -- Top Channel(s)", ln=1)
+                    pdf.set_draw_color(*C_BORDER)
+                    pdf.set_line_width(0.2)
+                    pdf.line(pdf.l_margin, pdf.get_y(),
+                             pdf.l_margin + W * 0.4, pdf.get_y())
+                    pdf.ln(2)
 
-            col_idx = 0
+                    pdf.set_font("Helvetica", size=6)
+                    pdf.set_text_color(199, 218, 255)
+                    pdf.set_xy(pdf.l_margin, pdf.get_y())
+                    pdf.cell(W, 3,
+                             "Dark-red = peak attention  |  Yellow/green = secondary  |  Blue = ignored",
+                             ln=1, align="L")
+                    pdf.ln(2)
+                    y_gcam = pdf.get_y()
 
-            def _new_if_page(title):
-                nonlocal y_if
-                pdf.add_page()
-                pdf.set_fill_color(*C_ACCENT)
-                pdf.rect(pdf.l_margin, pdf.t_margin, W, 9, style="F")
-                pdf.set_font("Helvetica", style="B", size=10)
-                pdf.set_text_color(255, 255, 255)
-                pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 1.5)
-                pdf.cell(W, 6, title, ln=0)
-                y_if = pdf.t_margin + 13
+                    n_gcam = len(gcam_channels)
+                    gcam_gap = 4
+                    gcam_pair_w = (W - (n_gcam - 1) * gcam_gap) / max(n_gcam, 1)
+                    gcam_orig_w = (gcam_pair_w - 2) / 2
+                    gcam_h = gcam_orig_w * 0.9
 
-            for ch in uploaded_chs:
-                # Start of a new row: check if there's enough space, else new page
-                if col_idx == 0 and y_if + row_h > pdf.h - 12:
-                    _new_if_page(page2_title + " (continued)")
-
-                x_cell = pdf.l_margin + col_idx * (pair_w + gap)
-
-                # Channel label (spans the full pair width)
-                pdf.set_font("Helvetica", size=6.5)
-                pdf.set_text_color(*C_MID)
-                pdf.set_xy(x_cell, y_if)
-                pdf.cell(pair_w, 4, _latin1(ch), ln=0, align="C")
-
-                # Original image
-                ch_bytes = _pil_to_jpeg_bytes(if_channel_imgs[ch])
-                pdf.image(io.BytesIO(ch_bytes), x=x_cell, y=y_if + 4, w=img_w, h=img_h)
-
-                if has_if_gcam and if_gradcam_overlays.get(ch) is not None:
-                    # Grad-CAM overlay image
-                    gcam_bytes = _pil_to_jpeg_bytes(if_gradcam_overlays[ch])
-                    pdf.image(io.BytesIO(gcam_bytes),
-                              x=x_cell + img_w + 2, y=y_if + 4,
-                              w=img_w, h=img_h)
-                    # Sub-captions
-                    pdf.set_font("Helvetica", size=5.5)
-                    pdf.set_text_color(*C_LIGHT)
-                    pdf.set_xy(x_cell, y_if + 4 + img_h + 0.5)
-                    pdf.cell(img_w, 3, "Original", ln=0, align="C")
-                    pdf.set_xy(x_cell + img_w + 2, y_if + 4 + img_h + 0.5)
-                    pdf.cell(img_w, 3, "Grad-CAM", ln=0, align="C")
-
-                col_idx += 1
-                if col_idx >= cols:
-                    col_idx = 0
-                    y_if += row_h
+                    for ci, gcam_ch in enumerate(gcam_channels):
+                        x_gcam = pdf.l_margin + ci * (gcam_pair_w + gcam_gap)
+                        pdf.set_font("Helvetica", size=6.5)
+                        pdf.set_text_color(*C_MID)
+                        pdf.set_xy(x_gcam, y_gcam)
+                        pdf.cell(gcam_pair_w, 4, _latin1(gcam_ch), ln=0, align="C")
+                        # Original channel image
+                        if gcam_ch in if_channel_imgs:
+                            orig_bytes = _pil_to_jpeg_bytes(if_channel_imgs[gcam_ch])
+                            pdf.image(io.BytesIO(orig_bytes),
+                                      x=x_gcam, y=y_gcam + 4, w=gcam_orig_w, h=gcam_h)
+                        # Grad-CAM overlay
+                        gcam_bytes_img = _pil_to_jpeg_bytes(if_gradcam_overlays[gcam_ch])
+                        pdf.image(io.BytesIO(gcam_bytes_img),
+                                  x=x_gcam + gcam_orig_w + 2, y=y_gcam + 4,
+                                  w=gcam_orig_w, h=gcam_h)
+                        # Sub-captions
+                        pdf.set_font("Helvetica", size=5.5)
+                        pdf.set_text_color(*C_LIGHT)
+                        pdf.set_xy(x_gcam, y_gcam + 4 + gcam_h + 0.5)
+                        pdf.cell(gcam_orig_w, 3, "Original", ln=0, align="C")
+                        pdf.set_xy(x_gcam + gcam_orig_w + 2, y_gcam + 4 + gcam_h + 0.5)
+                        pdf.cell(gcam_orig_w, 3, "Grad-CAM", ln=0, align="C")
 
             # Footer on IF page
             pdf.set_draw_color(*C_BORDER)
@@ -1572,7 +1730,11 @@ with tab1:
             # Invalidate cached IF result, IF Grad-CAM, and LLM review when channels change
             old_key = st.session_state.get("_if_upload_key", "")
             for _k in list(st.session_state.keys()):
-                if _k in ("if_result", "if_gcam_cache") or _k.startswith(f"if_llm_review_{old_key}"):
+                if (
+                    _k in ("if_result", "if_gcam_cache")
+                    or _k.startswith("if_gcam_cache_")
+                    or _k.startswith(f"if_llm_review_{old_key}")
+                ):
                     st.session_state.pop(_k, None)
 
     with if_right:
@@ -1594,14 +1756,28 @@ with tab1:
             if if_model is None:
                 st.error("IF classifier model not loaded. Check checkpoint path.")
             else:
-                # Use only the first image per channel for the trained model
+                # Average all images per channel for multi-image channels; use single image as-is
                 inference_tmp_paths = {}
                 tmp_to_delete = []
                 for ch, imgs in channel_files.items():
-                    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
-                        imgs[0].save(tf.name)
-                        inference_tmp_paths[ch] = tf.name
-                        tmp_to_delete.append(tf.name)
+                    if len(imgs) == 1:
+                        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
+                            imgs[0].save(tf.name, format="JPEG")
+                            inference_tmp_paths[ch] = tf.name
+                            tmp_to_delete.append(tf.name)
+                    else:
+                        # Pixel-average grayscale arrays across multiple images for this channel
+                        arrays = [
+                            np.array(img.convert("L").resize((224, 224)), dtype=np.float32) / 255.0
+                            for img in imgs
+                        ]
+                        avg = np.mean(arrays, axis=0)
+                        avg_uint8 = (np.clip(avg, 0, 1) * 255).astype(np.uint8)
+                        avg_pil = Image.fromarray(avg_uint8, mode="L").convert("RGB")
+                        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
+                            avg_pil.save(tf.name, format="JPEG")
+                            inference_tmp_paths[ch] = tf.name
+                            tmp_to_delete.append(tf.name)
                 try:
                     with st.spinner("Classifying IF pattern..."):
                         res = if_model.predict(inference_tmp_paths, top_k=3)
@@ -1701,9 +1877,60 @@ with tab1:
 
                 st.markdown(
                     f'<div class="info-box" style="margin-top:10px;">'
-                    f'<strong>🔬 LLM Safety Review (Gemma 4 31B)</strong><br>{review_text}</div>',
+                    f'<strong>🔬 LLM Safety Review</strong><br>{review_text}</div>',
                     unsafe_allow_html=True,
                 )
+
+                # ── IF Grad-CAM for top 1-2 uploaded channels ────────────────
+                if_result_for_gcam = st.session_state.get("if_result")
+                if_channel_imgs_for_gcam = st.session_state.get("if_channel_imgs")
+                gcam_upload_key = st.session_state.get("_if_upload_key", "")
+                gcam_cache_key = f"if_gcam_cache_{gcam_upload_key}"
+
+                if (
+                    if_result_for_gcam
+                    and if_channel_imgs_for_gcam
+                    and gcam_cache_key not in st.session_state
+                ):
+                    top_diag = if_result_for_gcam["top_predictions"][0]["diagnosis"]
+                    try:
+                        gcam_class_idx = IF_CLASSES.index(top_diag)
+                    except (ImportError, ValueError):
+                        gcam_class_idx = 0
+
+                    gcam_channels = [
+                        ch for ch in IF_CHANNELS if ch in if_channel_imgs_for_gcam
+                    ][:2]
+
+                    with st.spinner("Computing IF Grad-CAM..."):
+                        computed_gcam = {}
+                        for gcam_ch in gcam_channels:
+                            try:
+                                overlay_pil = compute_if_gradcam(
+                                    if_channel_imgs_for_gcam[gcam_ch],
+                                    gcam_ch,
+                                    gcam_class_idx,
+                                )
+                                if overlay_pil is not None:
+                                    computed_gcam[gcam_ch] = overlay_pil
+                            except Exception:
+                                pass
+                    st.session_state[gcam_cache_key] = computed_gcam
+
+                if gcam_cache_key in st.session_state and st.session_state[gcam_cache_key]:
+                    cached_gcam = st.session_state[gcam_cache_key]
+                    st.markdown(
+                        '<div class="sec-label" style="margin-top:16px;">IF Grad-CAM — Top Channel(s)</div>',
+                        unsafe_allow_html=True,
+                    )
+                    gcam_cols = st.columns(len(cached_gcam), gap="small")
+                    for col, (gcam_ch, gcam_img) in zip(gcam_cols, cached_gcam.items()):
+                        with col:
+                            st.image(
+                                gcam_img,
+                                caption=f"{gcam_ch} — Grad-CAM",
+                                use_container_width=True,
+                            )
 
         elif n_uploaded == 0:
             st.markdown("""
@@ -1844,7 +2071,9 @@ with tab2:
                             report_text=report,
                             if_result=st.session_state.get("if_result"),
                             if_channel_imgs=st.session_state.get("if_channel_imgs"),
-                            if_gradcam_overlays=None,
+                            if_gradcam_overlays=st.session_state.get(
+                                f"if_gcam_cache_{st.session_state.get('_if_upload_key', '')}"
+                            ),
                         )
                         st.session_state.report_key      = _report_key
                         st.session_state.report_text     = report
