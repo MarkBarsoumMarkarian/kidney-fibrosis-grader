@@ -100,21 +100,15 @@ class IFClassifier:
 
     def __init__(self, checkpoint_path: Union[str, Path], device: Optional[str] = None):
         self.device  = torch.device(device or ('cuda' if torch.cuda.is_available() else 'cpu'))
-        # Peek at checkpoint FIRST to get the correct class list and channel count
-        # before building the model — avoids head size mismatch on load_state_dict.
-        ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
-        self.classes   = ckpt.get('classes',    IF_CLASSES)
-        self._channels = ckpt.get('if_channels', IF_CHANNELS)
-        self._n_ch     = len(self._channels)
-        self._state    = ckpt.get('model_state_dict', ckpt)
-        self.model     = self._build()
-        self.model.load_state_dict(self._state)
+        self.classes = IF_CLASSES
+        self.model   = self._build()
+        self._load(checkpoint_path)
         self.model.eval()
 
     def _build(self) -> nn.Module:
         model   = tvm.resnet50(weights=None)
         old     = model.conv1
-        new     = nn.Conv2d(self._n_ch, old.out_channels,
+        new     = nn.Conv2d(N_IF, old.out_channels,
                             kernel_size=old.kernel_size,
                             stride=old.stride,
                             padding=old.padding, bias=False)
@@ -126,9 +120,9 @@ class IFClassifier:
         return model.to(self.device)
 
     def _load(self, path: Union[str, Path]):
-        # Kept for API compatibility but no longer called from __init__.
         ckpt  = torch.load(path, map_location=self.device, weights_only=False)
         state = ckpt.get('model_state_dict', ckpt)
+        # If checkpoint recorded classes/channels, use them
         if isinstance(ckpt, dict) and 'classes' in ckpt:
             self.classes = ckpt['classes']
         self.model.load_state_dict(state)
@@ -139,7 +133,8 @@ class IFClassifier:
         Returns (1, N_IF, H, W) tensor with zeros for missing channels.
         """
         planes = []
-        for ch in self._channels:
+        for ch in IF_CHANNELS:
+            path = channel_paths.get(ch)
             if path is not None:
                 planes.append(load_gray_normalized(path))
             else:
@@ -171,8 +166,8 @@ class IFClassifier:
               'warning': None  # or string if < 3 channels provided
             }
         """
-        channels_used    = [ch for ch in self._channels if ch in channel_paths]
-        channels_missing = [ch for ch in self._channels if ch not in channel_paths]
+        channels_used    = [ch for ch in IF_CHANNELS if ch in channel_paths]
+        channels_missing = [ch for ch in IF_CHANNELS if ch not in channel_paths]
 
         warning = None
         if len(channels_used) < 3:
