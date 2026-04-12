@@ -1865,42 +1865,42 @@ with tab2:
                         st.image(_if_imgs[ch], use_column_width=True, caption=ch)
 
         with rcol2:
-            # Show API key input if GROQ_API_KEY is not configured server-side
-            def _groq_key_from_secrets():
+            # Show API key input if OPENROUTER_API_KEY is not configured server-side
+            def _openrouter_key_from_secrets():
                 try:
-                    return st.secrets.get("GROQ_API_KEY", "")
+                    return st.secrets.get("OPENROUTER_API_KEY", "")
                 except Exception:
                     return ""
 
-            _groq_configured = bool(
-                os.environ.get("GROQ_API_KEY", "") or _groq_key_from_secrets()
+            _openrouter_configured = bool(
+                os.environ.get("OPENROUTER_API_KEY", "") or _openrouter_key_from_secrets()
             )
-            if not _groq_configured:
+            if not _openrouter_configured:
                 _user_key = st.text_input(
-                    "Groq API Key",
-                    value=st.session_state.get("groq_api_key_input", ""),
+                    "OpenRouter API Key",
+                    value=st.session_state.get("openrouter_api_key_input", ""),
                     type="password",
-                    placeholder="gsk_...",
-                    help="Enter your Groq API key to generate the AI report. Get a free key at console.groq.com",
-                    key="groq_api_key_widget",
+                    placeholder="sk-or-...",
+                    help="Enter your OpenRouter API key to generate the AI report. Get a free key at openrouter.ai",
+                    key="openrouter_api_key_widget",
                 )
                 if _user_key:
-                    st.session_state["groq_api_key_input"] = _user_key
+                    st.session_state["openrouter_api_key_input"] = _user_key
                     # Invalidate cached report so it regenerates with the new key
-                    if st.session_state.get("groq_key_used") != _user_key:
+                    if st.session_state.get("openrouter_key_used") != _user_key:
                         st.session_state.pop("report_key", None)
-                    st.session_state["groq_key_used"] = _user_key
-                elif not st.session_state.get("groq_api_key_input"):
+                    st.session_state["openrouter_key_used"] = _user_key
+                elif not st.session_state.get("openrouter_api_key_input"):
                     st.info(
-                        "Enter your [Groq API key](https://console.groq.com) above to generate the "
-                        "AI clinicopathological report. A free key is available at console.groq.com."
+                        "Enter your [OpenRouter API key](https://openrouter.ai) above to generate the "
+                        "AI clinicopathological report. A free key is available at openrouter.ai."
                     )
 
             # Only call the LLM (and rebuild the PDF) when images have changed
             _has_key = bool(
-                os.environ.get("GROQ_API_KEY", "")
-                or st.session_state.get("groq_api_key_input", "")
-                or _groq_key_from_secrets()
+                os.environ.get("OPENROUTER_API_KEY", "")
+                or st.session_state.get("openrouter_api_key_input", "")
+                or _openrouter_key_from_secrets()
             )
             if _has_key and st.session_state.get("report_key") != _report_key:
                 with st.spinner("Generating Clinicopathological Observation..."):

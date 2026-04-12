@@ -16,7 +16,7 @@ Interstitial fibrosis and tubular atrophy (IFTA) grading is a critical step in k
 | Task | 4-class fibrosis grading: Grade 0 / 1 / 2 / 3 |
 | Input | Trichrome-stained kidney biopsy image (JPG or PNG) |
 | Stain normalisation | Macenko · Reinhard · Vahadane (built-in, no extra dependencies) |
-| Report generation | Groq API with Llama 4 Scout |
+| Report generation | OpenRouter API with Llama 4 Scout |
 | Interface | Streamlit web app |
 
 **Grading scale:**
@@ -40,7 +40,7 @@ Input image (JPG/PNG)
     -> Global average pooling
     -> 4-class softmax classifier
     -> Grade + confidence scores
-    -> Groq / Llama 4 Scout
+    -> OpenRouter / Llama 4 Scout
     -> Structured pathology report
 ```
 
@@ -103,6 +103,6 @@ A `.devcontainer` config is included for VS Code devcontainer or GitHub Codespac
 
 ## Stack
 
-Python · PyTorch · ResNet-FPN · Streamlit · Groq API · Llama 4 Scout · PIL · NumPy · OpenCV
+Python · PyTorch · ResNet-FPN · Streamlit · OpenRouter API · Llama 4 Scout · PIL · NumPy · OpenCV
 
 **License:** MIT
