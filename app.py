@@ -29,7 +29,15 @@ if not os.path.exists(IF_MODEL_PATH):
     gdown.download('https://drive.google.com/uc?id=1JVGcgp8cxc5ZSnHGXTCX9Ez2fI3MEk9R', IF_MODEL_PATH, quiet=False)
     print('Done.')
 
-from inference import IFClassifier, IF_CHANNELS, CLASS_DISPLAY as IF_CLASS_DISPLAY
+try:
+    from inference import IFClassifier, IF_CHANNELS, CLASS_DISPLAY as IF_CLASS_DISPLAY
+    _IF_MODULE_OK = True
+except Exception as _if_import_err:
+    print(f"WARNING: Could not import inference module: {_if_import_err}")
+    IFClassifier    = None
+    IF_CHANNELS     = ['IgG', 'IgA', 'IgM', 'C3', 'C1q', 'kappa', 'lambda', 'fibrinogen', 'albumin']
+    IF_CLASS_DISPLAY = {}
+    _IF_MODULE_OK   = False
 
 st.set_page_config(
     page_title="Kidney Fibrosis Grader",
@@ -288,6 +296,8 @@ def load_model():
 
 @st.cache_resource
 def load_if_model():
+    if not _IF_MODULE_OK or IFClassifier is None:
+        return None
     if not os.path.exists(IF_MODEL_PATH):
         return None
     return IFClassifier(IF_MODEL_PATH)
@@ -1526,8 +1536,6 @@ with tab5:
 
     if_left, if_right = st.columns([2.5, 1.5], gap="large")
 
-    _IF_CHANNEL_KEYS = ['IgG', 'IgA', 'IgM', 'C3', 'C1q', 'kappa', 'lambda', 'fibrinogen', 'albumin']
-
     with if_left:
         st.markdown('<div class="sec-label">Upload IF Images by Channel</div>', unsafe_allow_html=True)
         row1_cols = st.columns(3, gap="small")
@@ -1536,7 +1544,7 @@ with tab5:
         all_rows = [row1_cols, row2_cols, row3_cols]
 
         channel_files = {}
-        for idx, ch in enumerate(_IF_CHANNEL_KEYS):
+        for idx, ch in enumerate(IF_CHANNELS):
             row_idx = idx // 3
             col_idx = idx % 3
             with all_rows[row_idx][col_idx]:
