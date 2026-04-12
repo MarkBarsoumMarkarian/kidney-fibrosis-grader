@@ -99,16 +99,20 @@ class IFClassifier:
     """
 
     def __init__(self, checkpoint_path: Union[str, Path], device: Optional[str] = None):
-        self.device  = torch.device(device or ('cuda' if torch.cuda.is_available() else 'cpu'))
-        self.classes = IF_CLASSES
-        self.model   = self._build()
-        self._load(checkpoint_path)
+        self.device      = torch.device(device or ('cuda' if torch.cuda.is_available() else 'cpu'))
+        # Peek at the checkpoint first so we build the right architecture
+        ckpt             = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        self.classes     = ckpt['classes']     if isinstance(ckpt, dict) and 'classes'     in ckpt else IF_CLASSES
+        self.if_channels = ckpt['if_channels'] if isinstance(ckpt, dict) and 'if_channels' in ckpt else IF_CHANNELS
+        self.model       = self._build()
+        self._load(ckpt)
         self.model.eval()
 
     def _build(self) -> nn.Module:
+        n_in    = len(self.if_channels)
         model   = tvm.resnet50(weights=None)
         old     = model.conv1
-        new     = nn.Conv2d(N_IF, old.out_channels,
+        new     = nn.Conv2d(n_in, old.out_channels,
                             kernel_size=old.kernel_size,
                             stride=old.stride,
                             padding=old.padding, bias=False)
@@ -119,28 +123,24 @@ class IFClassifier:
         )
         return model.to(self.device)
 
-    def _load(self, path: Union[str, Path]):
-        ckpt  = torch.load(path, map_location=self.device, weights_only=False)
-        state = ckpt.get('model_state_dict', ckpt)
-        # If checkpoint recorded classes/channels, use them
-        if isinstance(ckpt, dict) and 'classes' in ckpt:
-            self.classes = ckpt['classes']
+    def _load(self, ckpt):
+        state = ckpt.get('model_state_dict', ckpt) if isinstance(ckpt, dict) else ckpt
         self.model.load_state_dict(state)
 
     def _build_stack(self, channel_paths: dict) -> torch.Tensor:
         """
         channel_paths: {marker: image_path} for however many channels are present.
-        Returns (1, N_IF, H, W) tensor with zeros for missing channels.
+        Returns (1, n_channels, H, W) tensor with zeros for missing channels.
         """
         planes = []
-        for ch in IF_CHANNELS:
+        for ch in self.if_channels:
             path = channel_paths.get(ch)
             if path is not None:
                 planes.append(load_gray_normalized(path))
             else:
                 planes.append(np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.float32))
-        stack = np.stack(planes, axis=0)                          # (N_IF, H, W)
-        return torch.from_numpy(stack).unsqueeze(0).to(self.device)  # (1, N_IF, H, W)
+        stack = np.stack(planes, axis=0)                          # (n_channels, H, W)
+        return torch.from_numpy(stack).unsqueeze(0).to(self.device)  # (1, n_channels, H, W)
 
     @torch.no_grad()
     def predict(
@@ -166,8 +166,8 @@ class IFClassifier:
               'warning': None  # or string if < 3 channels provided
             }
         """
-        channels_used    = [ch for ch in IF_CHANNELS if ch in channel_paths]
-        channels_missing = [ch for ch in IF_CHANNELS if ch not in channel_paths]
+        channels_used    = [ch for ch in self.if_channels if ch in channel_paths]
+        channels_missing = [ch for ch in self.if_channels if ch not in channel_paths]
 
         warning = None
         if len(channels_used) < 3:
