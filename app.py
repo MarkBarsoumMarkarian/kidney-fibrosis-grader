@@ -2,7 +2,7 @@ import streamlit as st
 import torch
 import torch.nn.functional as F
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import torchvision.transforms as transforms
 import sys, os
 import re
@@ -544,7 +544,130 @@ def compute_if_gradcam(channel_imgs: dict, target_class: int = None):
     return overlays, target_class, probs
 
 
-# ── Stain Normalisation ────────────────────────────────────────────────────────
+# ── IF Mosaic & OpenRouter LLM Review ────────────────────────────────────────
+
+_MOSAIC_CELL = 224   # px per cell
+_MOSAIC_COLS = 3
+_MOSAIC_ROWS = 3
+
+
+def pil_to_base64(img: Image.Image, quality: int = 85) -> str:
+    """Convert a PIL Image to a base64-encoded JPEG string."""
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="JPEG", quality=quality)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
+def build_if_mosaic(channel_imgs: dict) -> Image.Image:
+    """
+    Build a 3×3 RGB grid of the 9 IF channels in the order defined by IF_CHANNELS.
+    Each cell is _MOSAIC_CELL × _MOSAIC_CELL pixels.
+    Missing channels are filled with a black square labelled "MISSING".
+    Channel names are drawn in white in the top-left corner of each cell.
+    """
+    cell = _MOSAIC_CELL
+    canvas_w = cell * _MOSAIC_COLS
+    canvas_h = cell * _MOSAIC_ROWS
+    mosaic = Image.new("RGB", (canvas_w, canvas_h), color=(0, 0, 0))
+    draw = ImageDraw.Draw(mosaic)
+
+    # Attempt to load a small built-in font; fall back to default if unavailable
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
+    except Exception:
+        font = ImageFont.load_default()
+
+    for idx, ch in enumerate(IF_CHANNELS):
+        row = idx // _MOSAIC_COLS
+        col = idx % _MOSAIC_COLS
+        x0, y0 = col * cell, row * cell
+
+        if ch in channel_imgs:
+            cell_img = channel_imgs[ch].convert("RGB").resize((cell, cell), Image.BILINEAR)
+            mosaic.paste(cell_img, (x0, y0))
+            label = ch
+        else:
+            # Black square already present; just add label
+            label = f"{ch}\nMISSING"
+
+        # White label with a thin dark shadow for readability
+        draw.text((x0 + 5, y0 + 4), label, fill=(50, 50, 50), font=font)
+        draw.text((x0 + 4, y0 + 3), label, fill=(255, 255, 255), font=font)
+
+    return mosaic
+
+
+def llm_review_if_panel(mosaic_b64: str, top_predictions: list, channels_used: list) -> str:
+    """
+    Send the IF mosaic to OpenRouter (Gemma 4 31B free) for a concise
+    nephropathologist-style safety review.
+
+    Returns the response text, or an error string on failure.
+    """
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not api_key:
+        try:
+            api_key = st.secrets["OPENROUTER_API_KEY"]
+        except Exception:
+            pass
+    if not api_key:
+        return "⚠️ OPENROUTER_API_KEY not configured — LLM review skipped."
+
+    top = top_predictions[0] if top_predictions else {}
+    diag_label  = top.get("display", "Unknown")
+    diag_pct    = top.get("pct", 0.0)
+    ch_str      = ", ".join(channels_used) if channels_used else "none"
+
+    prompt_text = (
+        "You are an expert nephropathologist reviewing an immunofluorescence (IF) panel.\n"
+        f"The image is a 3×3 mosaic of 9 IF channels in this order: "
+        f"IgG, IgA, IgM (row 1), C3, C1q, kappa (row 2), lambda, fibrinogen, albumin (row 3). "
+        f"Channels shown in black labelled MISSING were not uploaded.\n\n"
+        f"The AI model predicted: {diag_label} ({diag_pct:.1f}% confidence).\n"
+        f"Channels used: {ch_str}.\n\n"
+        "Review the mosaic carefully. In 3-5 concise sentences:\n"
+        "1. Does the staining pattern agree with the model's prediction?\n"
+        "2. Flag anything that contradicts or is clinically concerning.\n"
+        "3. Note any missing channels that would be critical for this diagnosis.\n"
+        "Be concise, clinically focused, and use standard nephropathology terminology."
+    )
+
+    payload = {
+        "model": "google/gemma-4-31b-it:free",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{mosaic_b64}"},
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt_text,
+                    },
+                ],
+            }
+        ],
+        "max_tokens": 512,
+        "temperature": 0.3,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    try:
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception as exc:
+        return f"⚠️ LLM review failed: {exc}"
 def _get_od(img_np: np.ndarray):
     """Convert uint8 RGB image to optical density (OD) space."""
     img = np.maximum(img_np.astype(np.float32) / 255.0, 1e-6)
@@ -1499,9 +1622,11 @@ with tab1:
         if st.session_state.get("_if_upload_key") != _if_upload_key:
             st.session_state["_if_upload_key"] = _if_upload_key
             st.session_state.if_channel_imgs   = channel_files if channel_files else None
-            # Invalidate cached IF result and IF Grad-CAM when channels change
-            for _k in ("if_result", "if_gcam_cache"):
-                st.session_state.pop(_k, None)
+            # Invalidate cached IF result, IF Grad-CAM, and LLM review when channels change
+            old_key = st.session_state.get("_if_upload_key", "")
+            for _k in list(st.session_state.keys()):
+                if _k in ("if_result", "if_gcam_cache") or _k.startswith(f"if_llm_review_{old_key}"):
+                    st.session_state.pop(_k, None)
 
     with if_right:
         n_uploaded = len(channel_files)
@@ -1593,6 +1718,34 @@ with tab1:
                 st.markdown(
                     f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:10px; '
                     f'color:#2a3a56; margin-top:4px;">Zero-filled: {", ".join(missing)}</div>',
+                    unsafe_allow_html=True,
+                )
+
+            # ── IF Panel Mosaic & LLM Safety Review ──────────────────────────
+            if channel_files:
+                st.markdown(
+                    '<div class="sec-label" style="margin-top:16px;">IF Panel Mosaic</div>',
+                    unsafe_allow_html=True,
+                )
+                mosaic = build_if_mosaic(channel_files)
+                st.image(mosaic, caption="IF Panel Mosaic (sent to LLM reviewer)", use_column_width=True)
+
+                llm_review_key = f"if_llm_review_{st.session_state.get('_if_upload_key', '')}"
+                if llm_review_key not in st.session_state:
+                    with st.spinner("Requesting LLM safety review of IF panel..."):
+                        mosaic_b64 = pil_to_base64(mosaic)
+                        review_text = llm_review_if_panel(
+                            mosaic_b64,
+                            res["top_predictions"],
+                            res["channels_used"],
+                        )
+                    st.session_state[llm_review_key] = review_text
+                else:
+                    review_text = st.session_state[llm_review_key]
+
+                st.markdown(
+                    f'<div class="info-box" style="margin-top:10px;">'
+                    f'<strong>🔬 LLM Safety Review (Gemma 4 31B)</strong><br>{review_text}</div>',
                     unsafe_allow_html=True,
                 )
 
