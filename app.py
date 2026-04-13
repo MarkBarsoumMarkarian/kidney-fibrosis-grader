@@ -296,16 +296,16 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Ordered fallback list for the full clinicopathological report (multimodal)
 REPORT_MODELS = [
-    "google/gemini-3.1-pro-preview:free",
     "meta-llama/llama-4-maverick:free",
     "meta-llama/llama-4-scout:free",
+    "google/gemma-4-31b-it:free",
 ]
 
 # Ordered fallback list for the IF panel safety review
 IF_REVIEW_MODELS = [
-    "google/gemini-3.1-pro-preview:free",
-    "meta-llama/llama-4-maverick:free",
+    "google/gemma-4-31b-it:free",
     "meta-llama/llama-4-scout:free",
+    "meta-llama/llama-4-maverick:free",
 ]
 # Thumbnail size used to generate stable MD5 fingerprints for IF channel images
 _IF_HASH_THUMB_SIZE = (4, 4)
@@ -657,45 +657,33 @@ def build_if_mosaic(channel_imgs: dict) -> Image.Image:
 
 
 def get_api_keys() -> list:
-    """Return a shuffled list of OpenRouter API keys.
+    keys = []
+    for i in range(1, 20):
+        key = os.environ.get(f"OPENROUTER_API_KEY_{i}", "")
+        if not key:
+            try:
+                key = st.secrets.get(f"OPENROUTER_API_KEY_{i}", "")
+            except Exception:
+                pass
+        if key and key.strip().startswith("sk-"):
+            keys.append(key.strip())
 
-    Checks OPENROUTER_API_KEYS (JSON array) first, then falls back to the
-    single OPENROUTER_API_KEY value.  Both environment variables and
-    Streamlit secrets are checked in that order.
-    """
-    keys_raw = os.environ.get("OPENROUTER_API_KEYS", "")
-    if not keys_raw:
-        try:
-            keys_raw = st.secrets.get("OPENROUTER_API_KEYS", "")
-        except Exception:
-            pass
+    print(f"DEBUG: found {len(keys)} numbered keys")  # ADD THIS
 
-    if keys_raw:
-        # Strip any surrounding whitespace or quotes HF might add
-        keys_raw = keys_raw.strip().strip("'\"")
-        try:
-            keys = json.loads(keys_raw)
-            if isinstance(keys, list):
-                # Strip each individual key of any whitespace/quotes
-                keys = [k.strip().strip("'\"") for k in keys if k]
-                random.shuffle(keys)
-                return [k for k in keys if k.startswith("sk-")]
-        except Exception:
-            # Maybe it's comma-separated plain text, not JSON
-            keys = [k.strip().strip("'\"") for k in keys_raw.split(",") if k.strip()]
-            keys = [k for k in keys if k.startswith("sk-")]
-            if keys:
-                random.shuffle(keys)
-                return keys
+    if not keys:
+        single = os.environ.get("OPENROUTER_API_KEY", "")
+        if not single:
+            try:
+                single = st.secrets.get("OPENROUTER_API_KEY", "")
+            except Exception:
+                pass
+        if single:
+            keys.append(single.strip())
 
-    # Fall back to single key
-    single = os.environ.get("OPENROUTER_API_KEY", "")
-    if not single:
-        try:
-            single = st.secrets.get("OPENROUTER_API_KEY", "")
-        except Exception:
-            pass
-    return [single.strip()] if single else []
+    print(f"DEBUG: total keys returned: {len(keys)}")  # ADD THIS
+
+    random.shuffle(keys)
+    return keys
 
 
 def llm_review_if_panel(mosaic_b64: str, top_predictions: list, channels_used: list,
@@ -2064,9 +2052,7 @@ with tab2:
                 except Exception:
                     return ""
 
-            _openrouter_configured = bool(
-                os.environ.get("OPENROUTER_API_KEY", "") or _openrouter_key_from_secrets()
-            )
+            _openrouter_configured = bool(get_api_keys())
             if not _openrouter_configured:
                 _user_key = st.text_input(
                     "OpenRouter API Key",
@@ -2089,11 +2075,7 @@ with tab2:
                     )
 
             # Only call the LLM (and rebuild the PDF) when images have changed
-            _has_key = bool(
-                os.environ.get("OPENROUTER_API_KEY", "")
-                or st.session_state.get("openrouter_api_key_input", "")
-                or _openrouter_key_from_secrets()
-            )
+            _has_key = bool(get_api_keys() or st.session_state.get("openrouter_api_key_input", ""))
             if _has_key and st.session_state.get("report_key") != _report_key:
                 with st.spinner("Generating Clinicopathological Observation..."):
                     try:
