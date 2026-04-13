@@ -293,6 +293,8 @@ CLASS_BG     = ["#0f2318", "#231a08", "#231208", "#230e0e"]
 CLASS_BORDER = ["#1a4a2a", "#4a3510", "#4a2010", "#4a1010"]
 CLASS_SHORT  = ["Minimal (<10%)", "Mild (10–25%)", "Moderate (25–50%)", "Severe (>50%)"]
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 # Ordered fallback list for the full clinicopathological report (multimodal)
 REPORT_MODELS = [
@@ -686,6 +688,30 @@ def get_api_keys() -> list:
     return keys
 
 
+def get_groq_keys() -> list:
+    keys = []
+    for i in range(1, 20):
+        key = os.environ.get(f"GROQ_API_KEY_{i}", "")
+        if not key:
+            try:
+                key = st.secrets.get(f"GROQ_API_KEY_{i}", "")
+            except Exception:
+                pass
+        if key and key.strip().startswith("gsk_"):
+            keys.append(key.strip())
+    if not keys:
+        single = os.environ.get("GROQ_API_KEY", "")
+        if not single:
+            try:
+                single = st.secrets.get("GROQ_API_KEY", "")
+            except Exception:
+                pass
+        if single:
+            keys.append(single.strip())
+    random.shuffle(keys)
+    return keys
+
+
 def llm_review_if_panel(mosaic_b64: str, top_predictions: list, channels_used: list,
                         multi_channel_notes: str = "") -> str:
     """
@@ -776,6 +802,39 @@ def llm_review_if_panel(mosaic_b64: str, top_predictions: list, channels_used: l
             else:
                 last_err = f"{model_id} rate limited on key ...{api_key[-4:]}"
                 break  # try next key
+    # OpenRouter exhausted — try Groq as fallback
+    groq_keys = get_groq_keys()
+    if groq_keys:
+        for groq_key in groq_keys:
+            groq_headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {groq_key}",
+            }
+            groq_payload = {
+                "model": GROQ_MODEL,
+                "messages": messages,
+                "max_tokens": 512,
+                "temperature": 0.3,
+            }
+            for attempt in range(2):
+                try:
+                    response = requests.post(
+                        GROQ_API_URL,
+                        headers=groq_headers,
+                        json=groq_payload,
+                        timeout=60
+                    )
+                    if response.status_code == 429:
+                        time.sleep([5, 15][attempt])
+                        continue
+                    response.raise_for_status()
+                    return response.json()["choices"][0]["message"]["content"].strip()
+                except requests.exceptions.Timeout:
+                    last_err = "Groq timed out"
+                    break
+                except Exception as e:
+                    last_err = str(e)
+                    break
     return f"⚠️ LLM review failed: all keys and models exhausted. Last error: {last_err}"
 def _get_od(img_np: np.ndarray):
     """Convert uint8 RGB image to optical density (OD) space."""
@@ -1074,6 +1133,40 @@ If vascular changes are prominent, address that. {"If IF positivity suggests an 
             else:
                 last_err = f"{model_id} rate limited on key ...{api_key[-4:]}"
                 break  # try next key
+    # OpenRouter exhausted — try Groq as fallback
+    groq_keys = get_groq_keys()
+    if groq_keys:
+        for groq_key in groq_keys:
+            groq_headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {groq_key}",
+            }
+            groq_payload = {
+                "model": GROQ_MODEL,
+                "messages": [{"role": "user", "content": content_parts}],
+                "max_tokens": 1800,
+                "temperature": 0.3,
+            }
+            for attempt in range(2):
+                try:
+                    response = requests.post(
+                        GROQ_API_URL,
+                        headers=groq_headers,
+                        json=groq_payload,
+                        timeout=90
+                    )
+                    if response.status_code == 429:
+                        time.sleep([5, 15][attempt])
+                        continue
+                    response.raise_for_status()
+                    raw = response.json()["choices"][0]["message"]["content"]
+                    return _clean_report_text(raw)
+                except requests.exceptions.Timeout:
+                    last_err = f"Groq timed out"
+                    break
+                except Exception as e:
+                    last_err = str(e)
+                    break
     raise ValueError(f"All keys and models exhausted. Last error: {last_err}")
 
 
@@ -2052,7 +2145,7 @@ with tab2:
                 except Exception:
                     return ""
 
-            _openrouter_configured = bool(get_api_keys())
+            _openrouter_configured = bool(get_api_keys() or get_groq_keys())
             if not _openrouter_configured:
                 _user_key = st.text_input(
                     "OpenRouter API Key",
@@ -2075,7 +2168,7 @@ with tab2:
                     )
 
             # Only call the LLM (and rebuild the PDF) when images have changed
-            _has_key = bool(get_api_keys() or st.session_state.get("openrouter_api_key_input", ""))
+            _has_key = bool(get_api_keys() or get_groq_keys() or st.session_state.get("openrouter_api_key_input", ""))
             if _has_key and st.session_state.get("report_key") != _report_key:
                 with st.spinner("Generating Clinicopathological Observation..."):
                     try:
