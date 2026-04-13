@@ -296,19 +296,24 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
-# Ordered fallback list for the full clinicopathological report (multimodal)
-REPORT_MODELS = [
-    "meta-llama/llama-4-maverick:free",
-    "meta-llama/llama-4-scout:free",
-    "google/gemma-4-31b-it:free",
-]
+NEPHRO_SYSTEM_PROMPT = """You are Dr. Claude Bernard, a world-renowned nephropathologist with 30 years of experience at a major academic medical center. You have published over 200 papers on glomerulonephritis, IgA nephropathy, and transplant pathology. You are reviewing a kidney biopsy for a clinical case conference.
 
-# Ordered fallback list for the IF panel safety review
-IF_REVIEW_MODELS = [
-    "google/gemma-4-31b-it:free",
-    "meta-llama/llama-4-scout:free",
-    "meta-llama/llama-4-maverick:free",
-]
+Your analysis must:
+- Reference SPECIFIC visual features you actually observe in each image provided — never write generic statements that would apply to any biopsy
+- Use Banff classification criteria for transplant biopsies when relevant
+- Apply Oxford MEST-C scoring for IgA nephropathy (M, E, S, T, C scores)
+- Reference ISN/RPS 2003 classification for lupus nephritis when applicable
+- Quantify findings where possible (e.g. "approximately 60% of glomeruli show...")
+- Flag ANY discordance between trichrome fibrosis grade and IF staining pattern
+- Always state what additional stains or tests (EM, Congo red, PAS, ANCA serology) would be needed to confirm the diagnosis
+- Write as if presenting at a nephropathology case conference — precise, evidence-based, clinically actionable
+- Never fabricate findings — if a channel is dark or absent, say so explicitly"""
+
+# Kept for rollback — no longer called by primary report generation
+REPORT_MODELS = []
+
+# Kept for rollback — no longer called by primary IF review
+IF_REVIEW_MODELS = []
 # Thumbnail size used to generate stable MD5 fingerprints for IF channel images
 _IF_HASH_THUMB_SIZE = (4, 4)
 
@@ -471,134 +476,6 @@ def compute_gradcam(img: Image.Image, target_class: int = None):
 
 
 
-# ── IF Grad-CAM ────────────────────────────────────────────────────────────────
-
-def compute_if_gradcam(
-    channel_img: Image.Image,
-    channel_name: str,
-    predicted_class_idx: int,
-) -> "Image.Image | None":
-    """
-    Compute a Grad-CAM activation overlay for a single IF channel image using the
-    IF ResNet-50 classifier (IFClassifier).
-
-    The channel is placed at its correct 9-channel position; all other channels are
-    zero-filled — exactly as ``IFClassifier._build_stack`` does for inference.
-    Targets ``model.layer4`` (last residual block) for gradient attribution.
-
-    Args:
-        channel_img:         PIL image for the single IF channel.
-        channel_name:        Name of the IF channel (e.g. ``"IgA"``).
-        predicted_class_idx: Class index returned by the classifier.
-
-    Returns:
-        PIL overlay image (same size as *channel_img*), or ``None`` on failure.
-    """
-    clf = load_if_model()
-    if clf is None:
-        return None
-    if channel_name not in IF_CHANNELS:
-        return None
-
-    device = clf.device
-    size = 224
-
-    # Build 9-channel tensor — only the target channel is populated.
-    arr = np.array(
-        channel_img.convert("L").resize((size, size), Image.BILINEAR),
-        dtype=np.float32,
-    ) / 255.0
-    nz = arr[arr > 0.05]
-    if len(nz) > 50:
-        arr = (arr - nz.mean()) / (nz.std() + 1e-6)
-
-    # Quality gate: if less than 5% of pixels have meaningful signal,
-    # the channel is too dark/uniform for reliable Grad-CAM
-    signal_fraction = np.sum(arr > 0.05) / arr.size
-    if signal_fraction < 0.02:
-        return None  # skip Grad-CAM for this channel — signal too weak
-
-    planes = [
-        arr if ch == channel_name else np.zeros((size, size), dtype=np.float32)
-        for ch in IF_CHANNELS
-    ]
-    tensor = torch.from_numpy(np.stack(planes, axis=0)).unsqueeze(0).to(device)
-
-    # Locate layer4 in the ResNet-50 backbone.
-    target_layer = None
-    for name, m in clf.model.named_modules():
-        if name == "layer4" and isinstance(m, torch.nn.Sequential):
-            target_layer = m
-            break
-    if target_layer is None:
-        return None
-
-    activations_ref: list = [None]
-    gradients_ref: list = [None]
-
-    def _save_act(module, inp, out):
-        activations_ref[0] = out.detach()
-
-    def _save_grad(module, grad_in, grad_out):
-        gradients_ref[0] = grad_out[0].detach()
-
-    fwd_h = target_layer.register_forward_hook(_save_act)
-    bwd_h = target_layer.register_full_backward_hook(_save_grad)
-    try:
-        clf.model.eval()
-        clf.model.zero_grad()
-        with torch.enable_grad():
-            output = clf.model(tensor)
-            score = output[0, predicted_class_idx]
-            score.backward()
-    finally:
-        fwd_h.remove()
-        bwd_h.remove()
-
-    if activations_ref[0] is None or gradients_ref[0] is None:
-        return None
-
-    weights = gradients_ref[0].mean(dim=[2, 3], keepdim=True)
-    cam = (weights * activations_ref[0]).sum(dim=1).squeeze(0)
-    cam = F.relu(cam)
-    cam_min, cam_max = cam.min(), cam.max()
-    if cam_max > cam_min:
-        cam = (cam - cam_min) / (cam_max - cam_min)
-    else:
-        cam = torch.zeros_like(cam)
-
-    cam_np = cam.cpu().numpy()
-
-    # Check if activation is inside tissue vs outside
-    # Tissue mask: original array pixels with signal > 0.05
-    tissue_mask = cv2.resize(
-        (arr > 0.05).astype(np.uint8),
-        (cam_np.shape[1], cam_np.shape[0]),
-    )
-    cam_in_tissue = cam_np[tissue_mask == 1].mean() if tissue_mask.sum() > 0 else 0
-    cam_outside_tissue = cam_np[tissue_mask == 0].mean() if (tissue_mask == 0).sum() > 0 else 0
-
-    # If activation outside tissue is 2x stronger than inside, skip this channel
-    if cam_outside_tissue > cam_in_tissue * 2.0:
-        return None  # peripheral/artifact activation — not clinically meaningful
-
-    orig_w, orig_h = channel_img.size
-    cam_u8 = (cam_np * 255).clip(0, 255).astype(np.uint8)
-    cam_resized = (
-        np.array(
-            Image.fromarray(cam_u8).resize((orig_w, orig_h), Image.BICUBIC)
-        ).astype(np.float32)
-        / 255.0
-    )
-
-    heatmap_u8 = (cam_resized * 255).astype(np.uint8)
-    heatmap_color = cv2.applyColorMap(heatmap_u8, cv2.COLORMAP_JET)
-    heatmap_rgb = cv2.cvtColor(heatmap_color, cv2.COLOR_BGR2RGB)
-
-    orig_np = np.array(channel_img.convert("RGB"))
-    overlay = cv2.addWeighted(orig_np, 0.55, heatmap_rgb, 0.45, 0)
-    return Image.fromarray(overlay)
-
 _MOSAIC_CELL = 224   # px per cell
 _MOSAIC_COLS = 3
 _MOSAIC_ROWS = 3
@@ -735,14 +612,17 @@ def get_groq_keys() -> list:
 def llm_review_if_panel(mosaic_b64: str, top_predictions: list, channels_used: list,
                         multi_channel_notes: str = "") -> str:
     """
-    Send the IF mosaic to OpenRouter (Gemma 4 31B free) for a concise
+    Send the IF mosaic to Groq (Llama 4 Scout) for a concise
     nephropathologist-style safety review.
 
     Returns the response text, or an error string on failure.
     """
-    api_keys = get_api_keys()
-    if not api_keys:
-        return "⚠️ OPENROUTER_API_KEY not configured — LLM review skipped."
+    groq_keys = get_groq_keys()
+    if not groq_keys:
+        raise ValueError(
+            "No Groq API key configured. Add GROQ_API_KEY_1 to Streamlit secrets. "
+            "Get a free key at console.groq.com"
+        )
 
     top = top_predictions[0] if top_predictions else {}
     diag_label  = top.get("display", "Unknown")
@@ -765,6 +645,7 @@ def llm_review_if_panel(mosaic_b64: str, top_predictions: list, channels_used: l
     )
 
     messages = [
+        {"role": "system", "content": NEPHRO_SYSTEM_PROMPT},
         {
             "role": "user",
             "content": [
@@ -777,85 +658,42 @@ def llm_review_if_panel(mosaic_b64: str, top_predictions: list, channels_used: l
                     "text": prompt_text,
                 },
             ],
-        }
+        },
     ]
-    headers = {
-        "Content-Type": "application/json",
-    }
 
     last_err = None
-    for api_key in api_keys:
-        headers["Authorization"] = f"Bearer {api_key}"
-        for model_id in IF_REVIEW_MODELS:
-            payload = {
-                "model": model_id,
-                "messages": messages,
-                "max_tokens": 512,
-                "temperature": 0.3,
-            }
-            for attempt in range(3):
-                try:
-                    resp = requests.post(
-                        OPENROUTER_API_URL,
-                        headers=headers,
-                        json=payload,
-                        timeout=60,
-                    )
-                    if resp.status_code == 401:
-                        last_err = f"key ...{api_key[-4:]} invalid or missing"
-                        break
-                    if resp.status_code == 429:
-                        wait = 2 ** attempt
-                        time.sleep(wait)
-                        continue
-                    if resp.status_code in (404, 529):
-                        last_err = f"{model_id} unavailable ({resp.status_code})"
-                        break
-                    resp.raise_for_status()
-                    return resp.json()["choices"][0]["message"]["content"].strip()
-                except requests.exceptions.Timeout:
-                    last_err = f"{model_id} timed out"
-                    break
-                except Exception as exc:
-                    last_err = str(exc)
-                    break
-            else:
-                last_err = f"{model_id} rate limited on key ...{api_key[-4:]}"
-                break  # try next key
-    # OpenRouter exhausted — try Groq as fallback
-    groq_keys = get_groq_keys()
-    if groq_keys:
-        for groq_key in groq_keys:
-            groq_headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {groq_key}",
-            }
-            groq_payload = {
-                "model": GROQ_MODEL,
-                "messages": messages,
-                "max_tokens": 512,
-                "temperature": 0.3,
-            }
-            for attempt in range(2):
-                try:
-                    response = requests.post(
-                        GROQ_API_URL,
-                        headers=groq_headers,
-                        json=groq_payload,
-                        timeout=60
-                    )
-                    if response.status_code == 429:
-                        time.sleep([5, 15][attempt])
-                        continue
-                    response.raise_for_status()
-                    return response.json()["choices"][0]["message"]["content"].strip()
-                except requests.exceptions.Timeout:
-                    last_err = "Groq timed out"
-                    break
-                except Exception as e:
-                    last_err = str(e)
-                    break
-    return f"⚠️ LLM review failed: all keys and models exhausted. Last error: {last_err}"
+    for groq_key in groq_keys:
+        groq_headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {groq_key}",
+        }
+        groq_payload = {
+            "model": GROQ_MODEL,
+            "messages": messages,
+            "max_tokens": 512,
+            "temperature": 0.3,
+        }
+        for attempt in range(2):
+            try:
+                response = requests.post(
+                    GROQ_API_URL,
+                    headers=groq_headers,
+                    json=groq_payload,
+                    timeout=45,
+                )
+                if response.status_code == 429:
+                    wait = [5, 15][attempt]
+                    time.sleep(wait)
+                    continue
+                response.raise_for_status()
+                return response.json()["choices"][0]["message"]["content"].strip()
+            except requests.exceptions.Timeout:
+                last_err = "Groq timed out"
+                break
+            except Exception as e:
+                last_err = str(e)
+                break
+    return f"⚠️ LLM review failed. Last error: {last_err}"
 def _get_od(img_np: np.ndarray):
     """Convert uint8 RGB image to optical density (OD) space."""
     img = np.maximum(img_np.astype(np.float32) / 255.0, 1e-6)
@@ -955,16 +793,14 @@ def compute_stain_metrics(img: Image.Image):
 def get_unified_report(images, all_probs, all_preds, avg_probs, consensus_pred, consensus_conf,
                        overlay_images=None, if_result=None, if_channel_imgs=None):
     """
-    Llama 4 Scout via OpenRouter: sees trichrome images + Grad-CAM overlays + IF channel images,
+    Llama 4 Scout via Groq: sees trichrome images + Grad-CAM overlays + IF channel images,
     then returns one cohesive multimodal nephropathological report.
     """
-    api_keys = get_api_keys()
-    if not api_keys:
+    groq_keys = get_groq_keys()
+    if not groq_keys:
         raise ValueError(
-            "OPENROUTER_API_KEY not configured. "
-            "Add your OpenRouter API key to Streamlit secrets (OPENROUTER_API_KEY) "
-            "or set it as an environment variable. "
-            "Get a free key at https://openrouter.ai"
+            "No Groq API key configured. Add GROQ_API_KEY_1 to Streamlit secrets. "
+            "Get a free key at console.groq.com"
         )
 
     n = len(images)
@@ -1111,83 +947,44 @@ If vascular changes are prominent, address that. {"If IF positivity suggests an 
         })
         del mosaic_img, mosaic_img_resized, buf_mosaic
 
-    headers = {
-        "Content-Type": "application/json",
-    }
-    base_payload = {
-        "messages": [{"role": "user", "content": content_parts}],
-        "max_tokens": 1800,
-        "temperature": 0.3,
-    }
-
     last_err = None
-    for api_key in api_keys:
-        headers["Authorization"] = f"Bearer {api_key}"
-        for model_id in REPORT_MODELS:
-            payload = {**base_payload, "model": model_id}
-            for attempt in range(3):
-                try:
-                    response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=90)
-                    if response.status_code == 401:
-                        last_err = f"key ...{api_key[-4:]} invalid or missing"
-                        break
-                    if response.status_code == 429:
-                        wait = 2 ** attempt
-                        time.sleep(wait)
-                        continue
-                    if response.status_code in (404, 529):
-                        last_err = (
-                            f"Model not found or unavailable on OpenRouter: {model_id}. "
-                            f"Status: {response.status_code}. Body: {response.text[:300]}"
-                        )
-                        break
-                    response.raise_for_status()
-                    raw = response.json()["choices"][0]["message"]["content"]
-                    return _clean_report_text(raw)
-                except requests.exceptions.Timeout:
-                    last_err = f"{model_id} timed out"
-                    break
-                except Exception as exc:
-                    last_err = str(exc)
-                    break
-            else:
-                last_err = f"{model_id} rate limited on key ...{api_key[-4:]}"
-                break  # try next key
-    # OpenRouter exhausted — try Groq as fallback
-    groq_keys = get_groq_keys()
-    if groq_keys:
-        for groq_key in groq_keys:
-            groq_headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {groq_key}",
-            }
-            groq_payload = {
-                "model": GROQ_MODEL,
-                "messages": [{"role": "user", "content": content_parts}],
-                "max_tokens": 1800,
-                "temperature": 0.3,
-            }
-            for attempt in range(2):
-                try:
-                    response = requests.post(
-                        GROQ_API_URL,
-                        headers=groq_headers,
-                        json=groq_payload,
-                        timeout=90
-                    )
-                    if response.status_code == 429:
-                        time.sleep([5, 15][attempt])
-                        continue
-                    response.raise_for_status()
-                    raw = response.json()["choices"][0]["message"]["content"]
-                    return _clean_report_text(raw)
-                except requests.exceptions.Timeout:
-                    last_err = f"Groq timed out"
-                    break
-                except Exception as e:
-                    last_err = str(e)
-                    break
-    raise ValueError(f"All keys and models exhausted. Last error: {last_err}")
+    for groq_key in groq_keys:
+        groq_headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {groq_key}",
+        }
+        groq_payload = {
+            "model": GROQ_MODEL,
+            "messages": [
+                {"role": "system", "content": NEPHRO_SYSTEM_PROMPT},
+                {"role": "user", "content": content_parts}
+            ],
+            "max_tokens": 1800,
+            "temperature": 0.3,
+        }
+        for attempt in range(2):
+            try:
+                response = requests.post(
+                    GROQ_API_URL,
+                    headers=groq_headers,
+                    json=groq_payload,
+                    timeout=60,
+                )
+                if response.status_code == 429:
+                    wait = [5, 15][attempt]
+                    time.sleep(wait)
+                    continue
+                response.raise_for_status()
+                raw = response.json()["choices"][0]["message"]["content"]
+                return _clean_report_text(raw)
+            except requests.exceptions.Timeout:
+                last_err = "Groq timed out"
+                break
+            except Exception as e:
+                last_err = str(e)
+                break
+
+    raise ValueError(f"Report generation failed. Last error: {last_err}")
 
 
 def _clean_report_text(text: str) -> str:
@@ -1236,8 +1033,7 @@ def _latin1(text: str) -> str:
 
 def generate_pdf_report(images, overlay_images, all_probs, all_preds,
                         avg_probs, consensus_pred, consensus_conf, report_text,
-                        if_result=None, if_channel_imgs=None,
-                        if_gradcam_overlays=None):
+                        if_result=None, if_channel_imgs=None):
     from fpdf import FPDF
     from datetime import date as _date
     import html as _html
@@ -1451,26 +1247,20 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
              ln=0, align="C")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # PAGE 2 — IF Panel Mosaic & Grad-CAM (if available) — before AI report
+    # PAGE 2 — IF Panel Mosaic — before AI report
     # ══════════════════════════════════════════════════════════════════════════
     if if_channel_imgs:
         uploaded_chs = [ch for ch in IF_CHANNELS if ch in if_channel_imgs]
         if uploaded_chs:
-            has_if_gcam = bool(if_gradcam_overlays)
-
             pdf.add_page()
 
             # Header bar
-            page2_title = (
-                "IF Panel Mosaic & Grad-CAM Activation Maps"
-                if has_if_gcam else "IF Panel Mosaic"
-            )
             pdf.set_fill_color(*C_ACCENT)
             pdf.rect(pdf.l_margin, pdf.t_margin, W, 9, style="F")
             pdf.set_font("Helvetica", style="B", size=10)
             pdf.set_text_color(255, 255, 255)
             pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 1.5)
-            pdf.cell(W, 6, page2_title, ln=0)
+            pdf.cell(W, 6, "IF Panel Mosaic", ln=0)
 
             y_if = pdf.t_margin + 13
 
@@ -1500,65 +1290,6 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
                      _latin1(f"Channels: {', '.join(uploaded_chs)}  |  "
                              "Black cells = missing channels (zero-filled)"),
                      ln=1, align="C")
-
-            y_if = pdf.get_y() + 4
-
-            # ── IF Grad-CAM section (top 1-2 channels) ───────────────────────
-            if has_if_gcam:
-                gcam_channels = [ch for ch in IF_CHANNELS if ch in if_gradcam_overlays]
-                if gcam_channels:
-                    # Section sub-header
-                    pdf.set_font("Helvetica", style="B", size=8)
-                    pdf.set_text_color(*C_ACCENT)
-                    pdf.set_xy(pdf.l_margin, y_if)
-                    pdf.cell(W, 5, "IF Grad-CAM -- Top Channel(s)", ln=1)
-                    pdf.set_draw_color(*C_BORDER)
-                    pdf.set_line_width(0.2)
-                    pdf.line(pdf.l_margin, pdf.get_y(),
-                             pdf.l_margin + W * 0.4, pdf.get_y())
-                    pdf.ln(2)
-
-                    pdf.set_font("Helvetica", size=6)
-                    pdf.set_text_color(199, 218, 255)
-                    pdf.set_xy(pdf.l_margin, pdf.get_y())
-                    pdf.cell(W, 3,
-                             "Dark-red = peak attention  |  Yellow/green = secondary  |  Blue = ignored",
-                             ln=1, align="L")
-                    pdf.ln(2)
-                    y_gcam = pdf.get_y()
-
-                    n_gcam = len(gcam_channels)
-                    gcam_gap = 4
-                    gcam_pair_w = (W - (n_gcam - 1) * gcam_gap) / max(n_gcam, 1)
-                    gcam_orig_w = (gcam_pair_w - 2) / 2
-                    gcam_h = gcam_orig_w * 0.9
-
-                    for ci, gcam_ch in enumerate(gcam_channels):
-                        x_gcam = pdf.l_margin + ci * (gcam_pair_w + gcam_gap)
-                        pdf.set_font("Helvetica", size=6.5)
-                        pdf.set_text_color(*C_MID)
-                        pdf.set_xy(x_gcam, y_gcam)
-                        pdf.cell(gcam_pair_w, 4, _latin1(gcam_ch), ln=0, align="C")
-                        # Original channel image
-                        if gcam_ch in if_channel_imgs:
-                            orig_bytes = _pil_to_jpeg_bytes(if_channel_imgs[gcam_ch])
-                            pdf.image(io.BytesIO(orig_bytes),
-                                      x=x_gcam, y=y_gcam + 4, w=gcam_orig_w, h=gcam_h)
-                        # Grad-CAM overlay
-                        overlay_val = if_gradcam_overlays.get(gcam_ch)
-                        if overlay_val is None or isinstance(overlay_val, str):
-                            continue
-                        gcam_bytes_img = _pil_to_jpeg_bytes(overlay_val)
-                        pdf.image(io.BytesIO(gcam_bytes_img),
-                                  x=x_gcam + gcam_orig_w + 2, y=y_gcam + 4,
-                                  w=gcam_orig_w, h=gcam_h)
-                        # Sub-captions
-                        pdf.set_font("Helvetica", size=5.5)
-                        pdf.set_text_color(*C_LIGHT)
-                        pdf.set_xy(x_gcam, y_gcam + 4 + gcam_h + 0.5)
-                        pdf.cell(gcam_orig_w, 3, "Original", ln=0, align="C")
-                        pdf.set_xy(x_gcam + gcam_orig_w + 2, y_gcam + 4 + gcam_h + 0.5)
-                        pdf.cell(gcam_orig_w, 3, "Grad-CAM", ln=0, align="C")
 
             # Footer on IF page
             pdf.set_draw_color(*C_BORDER)
@@ -1654,10 +1385,9 @@ for key in ["imgs", "all_probs", "all_preds", "if_channel_imgs", "if_result"]:
 
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3 = st.tabs([
     "Analysis & IF Diagnosis",
     "Clinicopathological Observation",
-    "Grad-CAM Explainability",
     "Stain Normalisation",
 ])
 
@@ -1840,7 +1570,7 @@ with tab1:
     Missing channels are zero-filled automatically — more channels yield higher confidence.
     Recommend uploading ≥ 3 channels for reliable results.
     The model returns the top-3 most likely nephropathological diagnoses.
-    IF results are automatically included in the Clinicopathological Observation and Grad-CAM tabs.
+    IF results are automatically included in the Clinicopathological Observation tab.
 </div>
 """, unsafe_allow_html=True)
 
@@ -1890,12 +1620,11 @@ with tab1:
             st.session_state.if_channel_imgs = (
                 {ch: imgs[0] for ch, imgs in channel_files.items()} if channel_files else None
             )
-            # Invalidate cached IF result, IF Grad-CAM, and LLM review when channels change
+            # Invalidate cached IF result and LLM review when channels change
             old_key = st.session_state.get("_if_upload_key", "")
             for _k in list(st.session_state.keys()):
                 if (
-                    _k in ("if_result", "if_gcam_cache")
-                    or _k.startswith("if_gcam_cache_")
+                    _k == "if_result"
                     or _k.startswith(f"if_llm_review_{old_key}")
                 ):
                     st.session_state.pop(_k, None)
@@ -2044,67 +1773,6 @@ with tab1:
                     unsafe_allow_html=True,
                 )
 
-                # ── IF Grad-CAM for top 1-2 uploaded channels ────────────────
-                if_result_for_gcam = st.session_state.get("if_result")
-                if_channel_imgs_for_gcam = st.session_state.get("if_channel_imgs")
-                gcam_upload_key = st.session_state.get("_if_upload_key", "")
-                gcam_cache_key = f"if_gcam_cache_{gcam_upload_key}"
-
-                if (
-                    if_result_for_gcam
-                    and if_channel_imgs_for_gcam
-                    and gcam_cache_key not in st.session_state
-                ):
-                    top_diag = if_result_for_gcam["top_predictions"][0]["diagnosis"]
-                    try:
-                        gcam_class_idx = IF_CLASSES.index(top_diag)
-                    except (ImportError, ValueError):
-                        gcam_class_idx = 0
-
-                    gcam_channels = [
-                        ch for ch in IF_CHANNELS if ch in if_channel_imgs_for_gcam
-                    ][:2]
-
-                    with st.spinner("Computing IF Grad-CAM..."):
-                        computed_gcam = {}
-                        for gcam_ch in gcam_channels:
-                            try:
-                                overlay_pil = compute_if_gradcam(
-                                    if_channel_imgs_for_gcam[gcam_ch],
-                                    gcam_ch,
-                                    gcam_class_idx,
-                                )
-                                if overlay_pil is None:
-                                    # Store a sentinel so we don't recompute
-                                    computed_gcam[gcam_ch] = "unreliable"
-                                else:
-                                    computed_gcam[gcam_ch] = overlay_pil
-                            except Exception:
-                                pass
-                    st.session_state[gcam_cache_key] = computed_gcam
-
-                if gcam_cache_key in st.session_state and st.session_state[gcam_cache_key]:
-                    cached_gcam = st.session_state[gcam_cache_key]
-                    st.markdown(
-                        '<div class="sec-label" style="margin-top:16px;">IF Grad-CAM — Top Channel(s)</div>',
-                        unsafe_allow_html=True,
-                    )
-                    gcam_cols = st.columns(len(cached_gcam), gap="small")
-                    for col, (gcam_ch, overlay) in zip(gcam_cols, cached_gcam.items()):
-                        with col:
-                            if overlay is None or isinstance(overlay, str):
-                                st.markdown(
-                                    f'<div style="text-align:center;padding:8px;color:#888;font-size:0.8rem;">'
-                                    f'⚠️ {gcam_ch}<br>Signal too weak or activation outside tissue — Grad-CAM skipped</div>',
-                                    unsafe_allow_html=True,
-                                )
-                            else:
-                                st.image(
-                                    overlay,
-                                    caption=f"{gcam_ch} — Grad-CAM",
-                                    use_container_width=True,
-                                )
-
         elif n_uploaded == 0:
             st.markdown("""
 <div class="await-wrap">
@@ -2178,30 +1846,30 @@ with tab2:
                 except Exception:
                     return ""
 
-            _openrouter_configured = bool(get_api_keys() or get_groq_keys())
+            _openrouter_configured = bool(get_groq_keys())
             if not _openrouter_configured:
                 _user_key = st.text_input(
-                    "OpenRouter API Key",
-                    value=st.session_state.get("openrouter_api_key_input", ""),
+                    "Groq API Key",
+                    value=st.session_state.get("groq_api_key_input", ""),
                     type="password",
-                    placeholder="sk-or-...",
-                    help="Enter your OpenRouter API key to generate the AI report. Get a free key at openrouter.ai",
-                    key="openrouter_api_key_widget",
+                    placeholder="gsk_...",
+                    help="Enter your Groq API key to generate the AI report. Get a free key at console.groq.com",
+                    key="groq_api_key_widget",
                 )
                 if _user_key:
-                    st.session_state["openrouter_api_key_input"] = _user_key
+                    st.session_state["groq_api_key_input"] = _user_key
                     # Invalidate cached report so it regenerates with the new key
-                    if st.session_state.get("openrouter_key_used") != _user_key:
+                    if st.session_state.get("groq_key_used") != _user_key:
                         st.session_state.pop("report_key", None)
-                    st.session_state["openrouter_key_used"] = _user_key
-                elif not st.session_state.get("openrouter_api_key_input"):
+                    st.session_state["groq_key_used"] = _user_key
+                elif not st.session_state.get("groq_api_key_input"):
                     st.info(
-                        "Enter your [OpenRouter API key](https://openrouter.ai) above to generate the "
-                        "AI clinicopathological report. A free key is available at openrouter.ai."
+                        "Enter your [Groq API key](https://console.groq.com) above to generate the "
+                        "AI clinicopathological report. A free key is available at console.groq.com."
                     )
 
             # Only call the LLM (and rebuild the PDF) when images have changed
-            _has_key = bool(get_api_keys() or get_groq_keys() or st.session_state.get("openrouter_api_key_input", ""))
+            _has_key = bool(get_groq_keys() or st.session_state.get("groq_api_key_input", ""))
             if _has_key and st.session_state.get("report_key") != _report_key:
                 with st.spinner("Generating Clinicopathological Observation..."):
                     try:
@@ -2238,9 +1906,6 @@ with tab2:
                             report_text=report,
                             if_result=st.session_state.get("if_result"),
                             if_channel_imgs=st.session_state.get("if_channel_imgs"),
-                            if_gradcam_overlays=st.session_state.get(
-                                f"if_gcam_cache_{st.session_state.get('_if_upload_key', '')}"
-                            ),
                         )
                         st.session_state.report_key      = _report_key
                         st.session_state.report_text     = report
@@ -2248,7 +1913,7 @@ with tab2:
                         st.session_state.report_pdf      = pdf_bytes
                     except requests.exceptions.HTTPError as e:
                         if e.response.status_code == 401:
-                            st.error("OpenRouter API key missing. Add OPENROUTER_API_KEY to Streamlit secrets.")
+                            st.error("Groq API key missing. Add GROQ_API_KEY_1 to Streamlit secrets.")
                         elif e.response.status_code == 429:
                             st.warning("Rate limit reached. Please wait a moment and retry.")
                         else:
@@ -2280,115 +1945,9 @@ with tab2:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — GRAD-CAM EXPLAINABILITY
+# TAB 3 — STAIN NORMALISATION
 # ══════════════════════════════════════════════════════════════════════════════
 with tab3:
-    st.markdown("""
-<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
-    <div style="font-family:'Playfair Display',serif; font-size:18px; font-weight:700; color:#e0e6f0;">
-        Grad-CAM Explainability
-    </div>
-    <div style="font-family:'IBM Plex Mono',monospace; font-size:9px; font-weight:500; letter-spacing:0.08em;
-                background:#2a1a4a; color:#c084fc; border:1px solid #4a2a80; padding:4px 10px; border-radius:4px;">
-        GRADIENT-WEIGHTED CLASS ACTIVATION MAPS
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-    st.markdown("""
-<div class="info-box">
-    <strong>How it works:</strong> Grad-CAM backpropagates the gradient of the predicted class score through
-    the final convolutional layer of the global ResNet backbone (layer4), then globally average-pools those
-    gradients to weight each feature map. The resulting spatial map highlights regions that most strongly
-    drove the prediction — giving pathologists an interpretable explanation of the model's decision.<br><br>
-    <strong>Colour scale:</strong>
-    <span style="color:#4466ff;">Blue</span> = low attention &nbsp;|&nbsp;
-    <span style="color:#00cc88;">Green</span> = moderate &nbsp;|&nbsp;
-    <span style="color:#ffbb00;">Yellow</span> = high &nbsp;|&nbsp;
-    <span style="color:#ff3333;">Red</span> = peak discriminative region.
-</div>
-""", unsafe_allow_html=True)
-
-    if st.session_state.imgs is not None:
-        gcam_imgs = st.session_state.imgs
-        st.markdown('<div class="sec-label">Using images from Analysis tab</div>', unsafe_allow_html=True)
-    else:
-        st.markdown('<div class="sec-label">Upload Biopsy Image</div>', unsafe_allow_html=True)
-        gcam_upload = st.file_uploader(
-            "Upload a biopsy image for Grad-CAM",
-            type=["jpg", "jpeg", "png"],
-            accept_multiple_files=False,
-            key="gcam_upload",
-            label_visibility="collapsed",
-        )
-        gcam_imgs = [Image.open(gcam_upload).convert("RGB")] if gcam_upload else None
-
-    if gcam_imgs is not None:
-        img_idx = 0
-        if len(gcam_imgs) > 1:
-            img_idx = st.selectbox(
-                "Select image", list(range(len(gcam_imgs))),
-                format_func=lambda x: f"Image {x+1}", key="gcam_img_sel"
-            )
-        selected_img = gcam_imgs[img_idx]
-
-        gcam_alpha_col, _ = st.columns([1, 2])
-        with gcam_alpha_col:
-            overlay_alpha = st.slider("Overlay opacity", 0.1, 0.9, 0.45, 0.05, key="gcam_alpha")
-
-        # Only recompute when the image changes; the slider just reblends.
-        # Use a small-thumbnail MD5 as a stable, content-based image fingerprint.
-        _thumb = selected_img.resize((16, 16)).tobytes()
-        gcam_img_key = hashlib.md5(_thumb).hexdigest()
-        gcam_needs_recompute = (
-            st.session_state.get("gcam_last_img_key") != gcam_img_key
-        )
-
-        if gcam_needs_recompute:
-            with st.spinner("Computing Grad-CAM..."):
-                try:
-                    # target_class=None → automatically selects the predicted class
-                    heatmap_rgb, _, pred_class, probs, cam_raw = compute_gradcam(
-                        selected_img, target_class=None
-                    )
-                    st.session_state["gcam_last_img_key"] = gcam_img_key
-                    st.session_state["gcam_cache"] = (heatmap_rgb, pred_class, probs, cam_raw)
-                except Exception as e:
-                    st.error(f"Grad-CAM error: {str(e)}")
-                    st.stop()
-
-        if "gcam_cache" not in st.session_state:
-            st.error("Grad-CAM computation failed to initialise. Please refresh the page.")
-            st.stop()
-
-        heatmap_rgb, pred_class, probs, cam_raw = st.session_state["gcam_cache"]
-        orig_np    = np.array(selected_img)
-        overlay_np = cv2.addWeighted(orig_np, 1 - overlay_alpha, heatmap_rgb, overlay_alpha, 0)
-
-        g1, g2, g3 = st.columns(3, gap="medium")
-        with g1:
-            st.markdown('<div class="norm-panel-label">Original Image</div>', unsafe_allow_html=True)
-            st.image(selected_img, use_container_width=True)
-        with g2:
-            st.markdown('<div class="norm-panel-label">Grad-CAM Heatmap</div>', unsafe_allow_html=True)
-            st.image(heatmap_rgb, use_container_width=True)
-        with g3:
-            st.markdown('<div class="norm-panel-label">Overlay</div>', unsafe_allow_html=True)
-            st.image(overlay_np, use_container_width=True)
-
-    else:
-        st.markdown("""
-<div class="await-wrap">
-    <div class="await-label">No Image Loaded</div>
-    <div class="await-sub">Upload images in the Analysis tab first, or use the uploader above.</div>
-</div>""", unsafe_allow_html=True)
-
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 4 — STAIN NORMALISATION
-# ══════════════════════════════════════════════════════════════════════════════
-with tab4:
     st.markdown("""
 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
     <div style="font-family:'Playfair Display',serif; font-size:18px; font-weight:700; color:#e0e6f0;">
