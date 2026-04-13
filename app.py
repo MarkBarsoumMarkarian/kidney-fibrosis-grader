@@ -515,7 +515,7 @@ def compute_if_gradcam(
     # Quality gate: if less than 5% of pixels have meaningful signal,
     # the channel is too dark/uniform for reliable Grad-CAM
     signal_fraction = np.sum(arr > 0.05) / arr.size
-    if signal_fraction < 0.05:
+    if signal_fraction < 0.02:
         return None  # skip Grad-CAM for this channel — signal too weak
 
     planes = [
@@ -578,8 +578,8 @@ def compute_if_gradcam(
     cam_in_tissue = cam_np[tissue_mask == 1].mean() if tissue_mask.sum() > 0 else 0
     cam_outside_tissue = cam_np[tissue_mask == 0].mean() if (tissue_mask == 0).sum() > 0 else 0
 
-    # If activation outside tissue is stronger than inside, skip this channel
-    if cam_outside_tissue > cam_in_tissue:
+    # If activation outside tissue is 2x stronger than inside, skip this channel
+    if cam_outside_tissue > cam_in_tissue * 2.0:
         return None  # peripheral/artifact activation — not clinically meaningful
 
     orig_w, orig_h = channel_img.size
@@ -1277,7 +1277,7 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
     pdf.set_text_color(199, 218, 255)
     pdf.set_xy(pdf.l_margin + 4, pdf.t_margin + 6)
     pdf.cell(W - 8, 4,
-             _latin1(f"Clinicopathological Observation  |  {_date.today().strftime('%B %d, %Y')}  |  ResNet-FPN  |  Llama 4 Scout Vision"),
+             _latin1(f"Clinicopathological Observation  |  {_date.today().strftime('%B %d, %Y')}  |  ResNet-FPN  |  Multimodal LLM Vision"),
              ln=0)
     y = pdf.t_margin + 14
 
