@@ -1385,9 +1385,8 @@ for key in ["imgs", "all_probs", "all_preds", "if_channel_imgs", "if_result"]:
 
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2 = st.tabs([
     "Analysis & IF Diagnosis",
-    "Clinicopathological Observation",
     "Stain Normalisation",
 ])
 
@@ -1674,9 +1673,6 @@ with tab1:
                     with st.spinner("Classifying IF pattern..."):
                         res = if_model.predict(inference_tmp_paths, top_k=3)
                     st.session_state["if_result"] = res
-                    # Remove the cached report key so the Clinicopathological tab
-                    # regenerates the LLM report with the new IF diagnosis included.
-                    st.session_state.pop("report_key", None)
                 except Exception as e:
                     st.error(f"Classification error: {str(e)}")
                 finally:
@@ -1744,34 +1740,7 @@ with tab1:
                     unsafe_allow_html=True,
                 )
                 mosaic = build_if_mosaic(channel_files)
-                st.image(mosaic, caption="IF Panel Mosaic (sent to LLM reviewer)", use_container_width=True)
-
-                # Build notes about channels that had multiple images averaged
-                notes = [
-                    f"{ch} had {len(imgs)} images \u2014 averaged into one panel cell"
-                    for ch, imgs in channel_files.items() if len(imgs) > 1
-                ]
-                multi_channel_notes = ("Note: " + ". ".join(notes) + ".") if notes else ""
-
-                llm_review_key = f"if_llm_review_{st.session_state.get('_if_upload_key', '')}"
-                if llm_review_key not in st.session_state:
-                    with st.spinner("Requesting LLM safety review of IF panel..."):
-                        mosaic_b64 = pil_to_base64(mosaic)
-                        review_text = llm_review_if_panel(
-                            mosaic_b64,
-                            res["top_predictions"],
-                            res["channels_used"],
-                            multi_channel_notes,
-                        )
-                    st.session_state[llm_review_key] = review_text
-                else:
-                    review_text = st.session_state[llm_review_key]
-
-                st.markdown(
-                    f'<div class="info-box" style="margin-top:10px;">'
-                    f'<strong>🔬 LLM Safety Review</strong><br>{review_text}</div>',
-                    unsafe_allow_html=True,
-                )
+                st.image(mosaic, caption="IF Panel Mosaic", use_container_width=True)
 
         elif n_uploaded == 0:
             st.markdown("""
@@ -1782,166 +1751,9 @@ with tab1:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — Clinicopathological Observation
+# TAB 2 — STAIN NORMALISATION
 # ══════════════════════════════════════════════════════════════════════════════
 with tab2:
-    if (st.session_state.imgs is not None
-            and st.session_state.all_probs is not None
-            and st.session_state.all_preds is not None):
-
-        all_probs      = st.session_state.all_probs
-        all_preds      = st.session_state.all_preds
-        avg_probs      = np.mean(all_probs, axis=0)
-        consensus_pred = int(np.argmax(avg_probs))
-        consensus_conf = avg_probs[consensus_pred] * 100
-
-        # Cache key — invalidated whenever trichrome images OR IF data changes
-        _thumb_bytes = b"".join(im.resize((8, 8)).tobytes() for im in st.session_state.imgs)
-        _if_key_part = st.session_state.get("_if_upload_key", "")
-        _if_ran      = "1" if st.session_state.get("if_result") is not None else "0"
-        _report_key  = hashlib.md5(
-            _thumb_bytes + _if_key_part.encode() + _if_ran.encode()
-        ).hexdigest()
-
-        st.markdown("""
-<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
-    <div style="font-family:'Playfair Display',serif; font-size:18px; font-weight:700; color:#e0e6f0;">Clinicopathological Observation</div>
-    <div style="font-family:'IBM Plex Mono',monospace; font-size:9px; font-weight:500; letter-spacing:0.08em;
-                background:#1a2d1a; color:#6ee7b7; border:1px solid #1a4a35; padding:4px 10px; border-radius:4px;">
-        LLAMA 4 SCOUT &nbsp;·&nbsp; VISION</div>
-</div>
-""", unsafe_allow_html=True)
-
-        rcol1, rcol2 = st.columns([1, 2.4], gap="large")
-
-        with rcol1:
-            st.markdown('<div class="sec-label">Trichrome Images</div>', unsafe_allow_html=True)
-            for i, im in enumerate(st.session_state.imgs):
-                caption = (
-                    f"Image {i+1} — {CLASS_NAMES[all_preds[i]]}"
-                    if len(st.session_state.imgs) > 1
-                    else "Analyzed biopsy image"
-                )
-                st.image(im, use_container_width=True, caption=caption)
-                # Show Grad-CAM overlay if available from the cached report
-                overlays = st.session_state.get("report_overlays")
-                if overlays and i < len(overlays) and overlays[i] is not None:
-                    st.image(overlays[i], use_container_width=True,
-                             caption=f"Grad-CAM{' (Image ' + str(i+1) + ')' if len(st.session_state.imgs) > 1 else ''}")
-
-            # Show IF channel images if available
-            _if_imgs = st.session_state.get("if_channel_imgs")
-            if _if_imgs:
-                st.markdown('<div class="sec-label" style="margin-top:16px;">IF Channel Images</div>',
-                            unsafe_allow_html=True)
-                for ch in IF_CHANNELS:
-                    if ch in _if_imgs:
-                        st.image(_if_imgs[ch], use_container_width=True, caption=ch)
-
-        with rcol2:
-            # Show API key input if GROQ_API_KEY is not configured server-side
-            _openrouter_configured = bool(get_groq_keys())
-            if not _openrouter_configured:
-                _user_key = st.text_input(
-                    "Groq API Key",
-                    value=st.session_state.get("groq_api_key_input", ""),
-                    type="password",
-                    placeholder="gsk_...",
-                    help="Enter your Groq API key to generate the AI report. Get a free key at console.groq.com",
-                    key="groq_api_key_widget",
-                )
-                if _user_key:
-                    st.session_state["groq_api_key_input"] = _user_key
-                    # Invalidate cached report so it regenerates with the new key
-                    if st.session_state.get("groq_key_used") != _user_key:
-                        st.session_state.pop("report_key", None)
-                    st.session_state["groq_key_used"] = _user_key
-                elif not st.session_state.get("groq_api_key_input"):
-                    st.info(
-                        "Enter your [Groq API key](https://console.groq.com) above to generate the "
-                        "AI clinicopathological report. A free key is available at console.groq.com."
-                    )
-
-            # Only call the LLM (and rebuild the PDF) when images have changed
-            _has_key = bool(get_groq_keys() or st.session_state.get("groq_api_key_input", ""))
-            if _has_key and st.session_state.get("report_key") != _report_key:
-                with st.spinner("Generating Clinicopathological Observation..."):
-                    try:
-                        # Compute Grad-CAM overlays for all images to pass to the LLM
-                        overlay_images = []
-                        for im in st.session_state.imgs:
-                            try:
-                                heatmap_rgb, overlay_np, _, _, _ = compute_gradcam(im, target_class=None)
-                                overlay_images.append(Image.fromarray(overlay_np))
-                            except Exception as cam_err:
-                                st.warning(f"Grad-CAM overlay unavailable for one image: {cam_err}")
-                                overlay_images.append(None)
-
-                        report = get_unified_report(
-                            images=st.session_state.imgs,
-                            all_probs=all_probs,
-                            all_preds=all_preds,
-                            avg_probs=avg_probs,
-                            consensus_pred=consensus_pred,
-                            consensus_conf=consensus_conf,
-                            overlay_images=overlay_images,
-                            if_result=st.session_state.get("if_result"),
-                            if_channel_imgs=st.session_state.get("if_channel_imgs"),
-                        )
-
-                        pdf_bytes = generate_pdf_report(
-                            images=st.session_state.imgs,
-                            overlay_images=overlay_images,
-                            all_probs=all_probs,
-                            all_preds=all_preds,
-                            avg_probs=avg_probs,
-                            consensus_pred=consensus_pred,
-                            consensus_conf=consensus_conf,
-                            report_text=report,
-                            if_result=st.session_state.get("if_result"),
-                            if_channel_imgs=st.session_state.get("if_channel_imgs"),
-                        )
-                        st.session_state.report_key      = _report_key
-                        st.session_state.report_text     = report
-                        st.session_state.report_overlays = overlay_images
-                        st.session_state.report_pdf      = pdf_bytes
-                    except requests.exceptions.HTTPError as e:
-                        if e.response.status_code == 401:
-                            st.error("Groq API key missing or invalid. Add GROQ_API_KEY_1 to Streamlit secrets.")
-                        elif e.response.status_code == 429:
-                            st.warning("Rate limit reached. Please wait a moment and retry.")
-                        else:
-                            st.error(f"Report unavailable: {str(e)}")
-                    except ValueError as e:
-                        st.error(str(e))
-                    except Exception as e:
-                        st.error(f"Report unavailable: {str(e)}")
-
-            # Display cached report and download button
-            if st.session_state.get("report_key") == _report_key and "report_text" in st.session_state:
-                st.markdown('<div class="ai-body">', unsafe_allow_html=True)
-                st.markdown(st.session_state.report_text)
-                st.markdown('</div>', unsafe_allow_html=True)
-                st.download_button(
-                    label="⬇ Download PDF Report",
-                    data=st.session_state.report_pdf,
-                    file_name="kidney_fibrosis_report.pdf",
-                    mime="application/pdf",
-                    use_container_width=True,
-                )
-    else:
-        st.markdown("""
-<div class="await-wrap">
-    <div class="await-label">No Report Yet</div>
-    <div class="await-sub">Run an analysis in the Analysis tab first</div>
-</div>
-""", unsafe_allow_html=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — STAIN NORMALISATION
-# ══════════════════════════════════════════════════════════════════════════════
-with tab3:
     st.markdown("""
 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
     <div style="font-family:'Playfair Display',serif; font-size:18px; font-weight:700; color:#e0e6f0;">
