@@ -1545,7 +1545,10 @@ def generate_pdf_report(images, overlay_images, all_probs, all_preds,
                             pdf.image(io.BytesIO(orig_bytes),
                                       x=x_gcam, y=y_gcam + 4, w=gcam_orig_w, h=gcam_h)
                         # Grad-CAM overlay
-                        gcam_bytes_img = _pil_to_jpeg_bytes(if_gradcam_overlays[gcam_ch])
+                        overlay_val = if_gradcam_overlays.get(gcam_ch)
+                        if overlay_val is None or isinstance(overlay_val, str):
+                            continue
+                        gcam_bytes_img = _pil_to_jpeg_bytes(overlay_val)
                         pdf.image(io.BytesIO(gcam_bytes_img),
                                   x=x_gcam + gcam_orig_w + 2, y=y_gcam + 4,
                                   w=gcam_orig_w, h=gcam_h)
@@ -2089,7 +2092,7 @@ with tab1:
                     gcam_cols = st.columns(len(cached_gcam), gap="small")
                     for col, (gcam_ch, overlay) in zip(gcam_cols, cached_gcam.items()):
                         with col:
-                            if overlay == "unreliable":
+                            if overlay is None or isinstance(overlay, str):
                                 st.markdown(
                                     f'<div style="text-align:center;padding:8px;color:#888;font-size:0.8rem;">'
                                     f'⚠️ {gcam_ch}<br>Signal too weak or activation outside tissue — Grad-CAM skipped</div>',
