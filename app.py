@@ -512,6 +512,12 @@ def compute_if_gradcam(
     if len(nz) > 50:
         arr = (arr - nz.mean()) / (nz.std() + 1e-6)
 
+    # Quality gate: if less than 5% of pixels have meaningful signal,
+    # the channel is too dark/uniform for reliable Grad-CAM
+    signal_fraction = np.sum(arr > 0.05) / arr.size
+    if signal_fraction < 0.05:
+        return None  # skip Grad-CAM for this channel — signal too weak
+
     planes = [
         arr if ch == channel_name else np.zeros((size, size), dtype=np.float32)
         for ch in IF_CHANNELS
@@ -562,6 +568,20 @@ def compute_if_gradcam(
         cam = torch.zeros_like(cam)
 
     cam_np = cam.cpu().numpy()
+
+    # Check if activation is inside tissue vs outside
+    # Tissue mask: original array pixels with signal > 0.05
+    tissue_mask = cv2.resize(
+        (arr > 0.05).astype(np.uint8),
+        (cam_np.shape[1], cam_np.shape[0]),
+    )
+    cam_in_tissue = cam_np[tissue_mask == 1].mean() if tissue_mask.sum() > 0 else 0
+    cam_outside_tissue = cam_np[tissue_mask == 0].mean() if (tissue_mask == 0).sum() > 0 else 0
+
+    # If activation outside tissue is stronger than inside, skip this channel
+    if cam_outside_tissue > cam_in_tissue:
+        return None  # peripheral/artifact activation — not clinically meaningful
+
     orig_w, orig_h = channel_img.size
     cam_u8 = (cam_np * 255).clip(0, 255).astype(np.uint8)
     cam_resized = (
@@ -2051,7 +2071,10 @@ with tab1:
                                     gcam_ch,
                                     gcam_class_idx,
                                 )
-                                if overlay_pil is not None:
+                                if overlay_pil is None:
+                                    # Store a sentinel so we don't recompute
+                                    computed_gcam[gcam_ch] = "unreliable"
+                                else:
                                     computed_gcam[gcam_ch] = overlay_pil
                             except Exception:
                                 pass
@@ -2064,13 +2087,20 @@ with tab1:
                         unsafe_allow_html=True,
                     )
                     gcam_cols = st.columns(len(cached_gcam), gap="small")
-                    for col, (gcam_ch, gcam_img) in zip(gcam_cols, cached_gcam.items()):
+                    for col, (gcam_ch, overlay) in zip(gcam_cols, cached_gcam.items()):
                         with col:
-                            st.image(
-                                gcam_img,
-                                caption=f"{gcam_ch} — Grad-CAM",
-                                use_container_width=True,
-                            )
+                            if overlay == "unreliable":
+                                st.markdown(
+                                    f'<div style="text-align:center;padding:8px;color:#888;font-size:0.8rem;">'
+                                    f'⚠️ {gcam_ch}<br>Signal too weak or activation outside tissue — Grad-CAM skipped</div>',
+                                    unsafe_allow_html=True,
+                                )
+                            else:
+                                st.image(
+                                    overlay,
+                                    caption=f"{gcam_ch} — Grad-CAM",
+                                    use_container_width=True,
+                                )
 
         elif n_uploaded == 0:
             st.markdown("""
