@@ -682,7 +682,8 @@ def llm_review_if_panel(mosaic_b64: str, top_predictions: list, channels_used: l
                     timeout=45,
                 )
                 if response.status_code == 429:
-                    time.sleep([5, 15][attempt])
+                    wait = [5, 15][attempt]
+                    time.sleep(wait)
                     continue
                 response.raise_for_status()
                 return response.json()["choices"][0]["message"]["content"].strip()
