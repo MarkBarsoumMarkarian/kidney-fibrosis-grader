@@ -1,108 +1,241 @@
 # Kidney Fibrosis Grader
 
-**Deep learning classifier for kidney biopsy fibrosis grading with AI-generated pathology reports**
+AI-assisted kidney biopsy analysis app for:
+- **Trichrome fibrosis grading** (4 classes)
+- **Immunofluorescence (IF) diagnosis** (9-channel classifier)
+- **Clinicopathological report generation** (multimodal LLM)
+- **Stain normalisation** (Macenko / Reinhard / Vahadane)
 
-> Upload a trichrome-stained kidney biopsy image. Get a fibrosis grade (0-3), confidence scores, and a structured pathology report written by an LLM in seconds.
-
----
-
-## What it does
-
-Interstitial fibrosis and tubular atrophy (IFTA) grading is a critical step in kidney biopsy assessment, but it is time-consuming, subjective, and requires a trained pathologist. This tool automates the visual grading step using a ResNet-FPN deep learning model and generates a clinical-style report via a large language model.
-
-| Component | Details |
-|---|---|
-| Architecture | ResNet-50 Feature Pyramid Network |
-| Task | 4-class fibrosis grading: Grade 0 / 1 / 2 / 3 |
-| Input | Trichrome-stained kidney biopsy image (JPG or PNG) |
-| Stain normalisation | Macenko · Reinhard · Vahadane (built-in, no extra dependencies) |
-| Report generation | OpenRouter API with Llama 4 Scout |
-| Interface | Streamlit web app |
-
-**Grading scale:**
-- **Grade 0**: No fibrosis (less than 5% cortical area)
-- **Grade 1**: Mild fibrosis (5-25%)
-- **Grade 2**: Moderate fibrosis (26-50%)
-- **Grade 3**: Severe fibrosis (more than 50%)
+> Research and educational use only. Not validated for clinical diagnosis.
 
 ---
 
-## Architecture
+## What this repository contains
 
-Adapts the [vkola-lab/ajpa2021](https://github.com/vkola-lab/ajpa2021) ResNet-FPN, originally built for whole-slide images (.svs), for standard JPG/PNG input. OpenSlide replaced with PIL, no WSI dependencies, runs on standard hardware including CPU-only.
+This project ships a Streamlit application (`app.py`) that combines classical pathology workflows with deep learning and LLM-assisted report drafting.
 
+### Main capabilities
+
+1. **Analysis & IF Diagnosis tab**
+   - Upload **1-3 trichrome biopsy images** (`jpg/jpeg/png`)
+   - Run fibrosis grading with a patched **ResNet-FPN** model
+   - View consensus prediction, class probabilities, and confidence
+   - Upload IF channels (IgG, IgA, IgM, C3, C1q, kappa, lambda, fibrinogen, albumin)
+   - Run IF classifier (ResNet-50, 9-channel input, top-3 outputs)
+   - Auto zero-fill missing IF channels
+   - Generate IF mosaic and optional LLM safety review of IF pattern
+
+2. **Clinicopathological Observation tab**
+   - Generates Grad-CAM overlays for trichrome images
+   - Sends trichrome image(s), overlays, and IF mosaic to an LLM
+   - Produces a structured multimodal nephropathology-style report
+   - Exports a multi-page PDF containing:
+     - fibrosis summary + probability bars
+     - IF diagnosis summary (if available)
+     - image and Grad-CAM panels
+     - IF mosaic page (if IF data uploaded)
+     - report text page
+
+3. **Stain Normalisation tab**
+   - Source image + reference image workflow
+   - Methods included:
+     - Macenko (SVD stain separation)
+     - Reinhard (LAB statistics transfer)
+     - Vahadane-style LAB histogram matching
+   - Shows before/after visual comparison
+   - Computes stain metrics (LAB means, color spread)
+   - Runs fibrosis inference before/after normalisation for comparison
+
+---
+
+## Models and outputs
+
+### Trichrome fibrosis model
+- Architecture: patched **ResNet-FPN** from the AJPA/vkola-lab lineage
+- Classes:
+  - Minimal (<10% fibrosis)
+  - Mild (10-25%)
+  - Moderate (25-50%)
+  - Severe (>50%)
+- Weights file: `global_only.pth`
+
+### IF classifier
+- Architecture: **ResNet-50** with 9-channel grayscale IF stack
+- Output classes:
+  - transplant
+  - membranous_nephropathy
+  - lupus_nephritis
+  - FSGS
+  - IgA_nephropathy
+  - amyloidosis
+  - crescentic_GN
+  - diabetic_nephropathy
+  - minimal_change_disease
+- Weights file: `if_classifier_best.pth`
+
+### Explainability and reporting
+- Grad-CAM for trichrome model region saliency
+- LLM report generation through **Groq API** (`meta-llama/llama-4-scout-17b-16e-instruct`)
+- PDF export via `fpdf2`
+
+---
+
+## Repository structure
+
+```text
+.
+├── app.py                      # Streamlit app (UI + inference + Grad-CAM + LLM + PDF)
+├── inference.py                # IF classifier module + channel parsing helpers
+├── download_model.py           # Downloads trichrome weights (global_only.pth)
+├── requirements.txt            # Python dependencies
+├── models/
+│   ├── resnet.py
+│   ├── resnet_fpn.py
+│   └── resnet_fpn_patched.py
+├── utils/
+│   ├── metrics.py
+│   ├── model_builder.py
+│   └── trainer_patched.py
+├── .streamlit/
+│   └── secrets.toml.example
+└── .devcontainer/
+    └── devcontainer.json
 ```
-Input image (JPG/PNG)
-    -> [Optional] Stain normalisation (Macenko / Reinhard / Vahadane)
-    -> PIL preprocessing + transforms
-    -> ResNet-50 backbone
-    -> Feature Pyramid Network
-    -> Global average pooling
-    -> 4-class softmax classifier
-    -> Grade + confidence scores
-    -> OpenRouter / Llama 4 Scout
-    -> Structured pathology report
-```
 
 ---
 
-## Stain Normalisation
+## Setup
 
-Trichrome staining intensity varies across laboratories, which can shift colour distributions at the same fibrosis grade and cause the model to mis-predict. The built-in **Stain Normalisation** tab lets you transfer a reference lab's stain profile onto your source image before running inference, reducing cross-site domain shift.
-
-Three algorithms are available, all implemented from scratch with NumPy/OpenCV (no additional dependencies):
-
-| Method | Approach | Reference |
-|---|---|---|
-| **Macenko** | SVD-based stain-vector separation in optical-density space, most accurate for trichrome | Macenko et al., *A method for normalizing histology slides for quantitative analysis*, ISBI 2009 · [doi:10.1109/ISBI.2009.5193250](https://doi.org/10.1109/ISBI.2009.5193250) |
-| **Reinhard** | Per-channel mean/std transfer in LAB colour space, fast and simple | Reinhard et al., *Color transfer between images*, IEEE CG&A 2001 · [doi:10.1109/38.946629](https://doi.org/10.1109/38.946629) |
-| **Vahadane** | Full LAB histogram matching via quantile interpolation, robust to outliers | Vahadane et al., *Structure-Preserving Color Normalization and Sparse Stain Separation for Histological Images*, IEEE TMI 2016 · [doi:10.1109/TMI.2016.2529665](https://doi.org/10.1109/TMI.2016.2529665) |
-
----
-
-## How to run
-
-### Clone and run locally
+### 1) Clone
 
 ```bash
-git clone https://github.com/MarkBarsoumMarkarian/kidney-fibrosis-grader
+git clone https://github.com/MarkBarsoumMarkarian/kidney-fibrosis-grader.git
 cd kidney-fibrosis-grader
+```
+
+### 2) Install dependencies
+
+```bash
 pip install -r requirements.txt
-python download_model.py        # downloads weights from Google Drive
+```
+
+### 3) Prepare model weights
+
+Option A (manual trichrome download helper):
+
+```bash
+python download_model.py
+```
+
+Option B (automatic):
+- Running `app.py` auto-downloads missing weights for:
+  - `global_only.pth`
+  - `if_classifier_best.pth`
+
+### 4) Configure secrets
+
+Copy template:
+
+```bash
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml
+```
+
+Then set keys as needed.
+
+#### Required for LLM report and IF LLM safety review
+
+```toml
+GROQ_API_KEY = "your_groq_key"
+```
+
+You can also set numbered keys for rotation/fallback:
+
+```toml
+GROQ_API_KEY_1 = "..."
+GROQ_API_KEY_2 = "..."
+```
+
+#### Optional / legacy key path still present in code
+
+```toml
+OPENROUTER_API_KEY = "your_openrouter_key"
+```
+
+### 5) Run app
+
+```bash
 streamlit run app.py
 ```
 
-### Environment variables
-
-```bash
-OPENROUTER_API_KEY=your_key_here    # required for LLM report generation and IF panel safety review
-```
-
-Get a free OpenRouter API key at [openrouter.ai](https://openrouter.ai)
-
-For local development, copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and fill in your key.  
-For Streamlit Cloud deployments, add the key under **Settings → Secrets**.
-
-A `.devcontainer` config is included for VS Code devcontainer or GitHub Codespaces.
+Default local URL is typically `http://localhost:8501`.
 
 ---
 
-## Limitations
+## Dependency stack
 
-- Research and educational tool only, not validated for clinical use
-- Performance depends on image quality and staining consistency
-- LLM-generated reports should not replace pathologist review
+From `requirements.txt`:
+- torch
+- torchvision
+- streamlit
+- numpy
+- Pillow
+- opencv-python-headless
+- gdown
+- google-generativeai
+- fpdf2
+- timm
 
 ---
 
-## Related
+## Standalone IF classifier usage
 
-[trichrome-analyzer](https://github.com/MarkBarsoumMarkarian/trichrome-analyzer) — companion tool for pixel-level fibrosis area quantification from trichrome images.
+`inference.py` exposes `IFClassifier` and helpers for programmatic use.
+
+Supported marker channels:
+`IgG, IgA, IgM, C3, C1q, kappa, lambda, fibrinogen, albumin`
+
+It can:
+- infer from explicit channel-to-file mappings
+- auto-detect channels from filenames
+- return top-k predictions, used channels, missing channels, and warnings
 
 ---
 
-## Stack
+## Notes, limitations, and safety
 
-Python · PyTorch · ResNet-FPN · Streamlit · OpenRouter API · Llama 4 Scout · PIL · NumPy · OpenCV
+- Research use only; not for clinical deployment.
+- Predictions depend on stain quality, scanner differences, and image selection.
+- Missing IF channels are zero-filled, which can lower confidence.
+- LLM output can be wrong or incomplete; pathologist review is mandatory.
+- If LLM features are used, image-derived data is sent to external API services.
 
-**License:** MIT
+---
+
+## Troubleshooting
+
+- **Model file missing**: run `python download_model.py` (trichrome) or launch `app.py` for auto-download.
+- **LLM report unavailable**: check `GROQ_API_KEY` / `GROQ_API_KEY_1` in Streamlit secrets.
+- **Slow startup**: first run may take longer due to model downloads.
+- **No IF result**: ensure at least one IF channel image is uploaded and supported file types are used.
+
+---
+
+## Devcontainer / Codespaces
+
+A `.devcontainer/devcontainer.json` is included:
+- Python 3.11 base image
+- installs `requirements.txt`
+- auto-runs Streamlit app on attach
+- forwards port `8501`
+
+---
+
+## Related project
+
+- [trichrome-analyzer](https://github.com/MarkBarsoumMarkarian/trichrome-analyzer) — companion tool for pixel-level fibrosis area quantification.
+
+---
+
+## License
+
+MIT
