@@ -1,3 +1,6 @@
+# Updates:
+Moved Project to HuggingFace for faster processing speeds: [Link](https://huggingface.co/spaces/MarkBarsoum/kidney-fibrosis-grader)
+
 # Kidney Fibrosis Grader
 
 AI-assisted kidney biopsy analysis app for:
