@@ -1,5 +1,6 @@
 # Updates:
 Moved Project to HuggingFace for faster processing speeds: [Link](https://huggingface.co/spaces/MarkBarsoum/Kidney-IS-Predictor)
+(Currently testing Precision medicine models, where the model will predict if the patient needs immunosupressive drugs or not. Will connect everything together soon))
 
 # Kidney Fibrosis Grader
 
